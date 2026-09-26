@@ -22,7 +22,7 @@ None of the Hub datasets is published yet. The build so far is local, in `local-
 
 - `file` is the file byte for byte, with its SHA-256.
 - `text` is the text layer of a born-digital PDF exactly as `pdftotext -raw` prints it, or the text an HTML page renders.
-- `ocr_text` holds the text layer of a PDF that has text on a page one image covers at least half of. The pipeline takes such text for OCR by whoever scanned the page, so it is not verbatim, and it never goes in `text`.
+- `ocr_text` holds the text layer of a PDF that has text on a page one image covers at least half of. The pipeline takes such text for OCR by whoever scanned the page and never puts it in `text`. On a scanned page it is OCR and not verbatim. The rule errs toward `ocr_text`, because it also catches a born-digital page that one image, such as a map or a photograph, covers at least half of.
 - Listing fields keep the page's characters. The only change is that each run of ASCII whitespace becomes one space.
 
 `verify --deep` hashes every stored file again and extracts its text again, and reports any row whose text differs by even one character.

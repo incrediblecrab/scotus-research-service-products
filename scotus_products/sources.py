@@ -416,6 +416,7 @@ COLLECTIONS = {c.name: c for c in (
         single(f"{BASE}/opinions/USReports.aspx"), parse_us_reports, typed_us_reports, partition_label="volumes",
         notes=(
             "Older volumes are scans of the printed books. A scan's only text is the OCR layer inside the file, which is in ocr_text and is not verbatim; text_source on each row says which kind of file it is, and the table above counts them.",
+            "Seven bound volumes that are not scans are marked mixed, so their text is in ocr_text too: volumes 515, 532, 533, 534, 545, 571 and 576. In each, one to three pages carry an image, such as a map or a photograph, that covers at least half of the page, and the text on those pages is a heading, a caption or a map's labels, such as \"Red arrow points to Ten Commandments Monument.\" in volume 545. That text is drawn as visible type, while the scan of volume 500 draws its OCR layer as invisible text (render mode 3); both were examined on September 26, 2026.",
             "The Court's page says: \"PDFs of partial volumes made available for the convenience of the bench and bar, as well as page proofs of volumes not yet published by GPO, will be posted bearing a “page proof” watermark.\"",
         ),
     ),
@@ -441,7 +442,10 @@ COLLECTIONS = {c.name: c for c in (
     Collection(
         "orders-of-the-court", "Orders of the Court", f"{BASE}/orders/ordersofthecourt/",
         term_pages("orders-of-the-court", BASE + "/orders/ordersofthecourt/{yy}"), parse_dated_items, typed_dated_item,
-        notes=("The Court's page says: \"Caution: These electronic orders may contain computer-generated errors or other deviations from the official printed versions. Moreover, all order lists and miscellaneous orders are replaced within a few months by paginated versions of them in a preliminary print of the United States Reports, and one year after the issuance of the preliminary print by the final version of the orders in a U. S. Reports bound volume. In case of discrepancies between the print and electronic versions of orders, the print version controls. In case of discrepancies between order lists or miscellaneous orders and any later official version of them, the later version controls.\"",),
+        notes=(
+            "The Court's page says: \"Caution: These electronic orders may contain computer-generated errors or other deviations from the official printed versions. Moreover, all order lists and miscellaneous orders are replaced within a few months by paginated versions of them in a preliminary print of the United States Reports, and one year after the issuance of the preliminary print by the final version of the orders in a U. S. Reports bound volume. In case of discrepancies between the print and electronic versions of orders, the print version controls. In case of discrepancies between order lists or miscellaneous orders and any later official version of them, the later version controls.\"",
+            "Four files are marked mixed, so their text is in ocr_text: \"Rules of Appellate Procedure\", \"Rules of Bankruptcy Procedure\", \"Rules of Criminal Procedure\" and \"Rules of Civil Procedure\", each dated 03/26/09 on the listing. In each, the first three pages are born-digital and every later page is a scan with an invisible OCR layer (examined September 26, 2026).",
+        ),
     ),
     Collection(
         "orders-by-circuit", "Orders by Circuit", f"{BASE}/orders/ordersbycircuit/",
