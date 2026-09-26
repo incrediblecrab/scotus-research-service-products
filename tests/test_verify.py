@@ -168,6 +168,7 @@ def test_an_id_in_two_partitions(dataset):
     manifest = store.read_manifest()
     manifest["partitions"]["OT2024"] = dict(manifest["partitions"]["OT2023"], sha256=stats["sha256"], rows=1, listed=1, ids=stats["ids"], file="data/OT2024.parquet")
     (root / "manifest.json").write_text(__import__("json").dumps(manifest))
+    store.close()
     assert any("ids in more than one row" in p for p in check(root)["problems"])
 
 

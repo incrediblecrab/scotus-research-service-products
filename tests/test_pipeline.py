@@ -21,7 +21,11 @@ def run(root, listing, site, **options):
 
 
 def rows(root, key="OT2023"):
-    return {row["id"]: row for row in LocalStore(root).read_partition(key)}
+    store = LocalStore(root)
+    try:
+        return {row["id"]: row for row in store.read_partition(key)}
+    finally:
+        store.close()
 
 
 @pytest.fixture

@@ -27,7 +27,7 @@ Offline tests: `pip install '.[test]'`, then `python -m pytest -q`. They use no 
 
 **Files:**
 
-- `conftest.py`: fixture loaders, a stand-in site that serves bytes by URL (404 otherwise) and counts every request, and a stand-in listing.
+- `conftest.py`: fixture loaders, a stand-in site that serves bytes by URL (404 otherwise) and counts every request, a stand-in listing, and a check around every test that fails it when a store is left open (an open store leaves its empty staging directory in the temporary directory).
 - `test_sources.py`: each collection's parser on a saved page: entry, file and partition counts, and every field a substring of the text the page renders.
 - `test_markup.py`: rendered text, whitespace, and link resolution.
 - `test_extract.py`: raw text unchanged, hyphens that end a line kept, one form feed per page, scanned or born-digital, and the pypdf cross-check.

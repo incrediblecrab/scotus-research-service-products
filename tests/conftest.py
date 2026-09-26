@@ -2,6 +2,7 @@
 
 import gzip
 import hashlib
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -98,3 +99,13 @@ def born_digital():
 @pytest.fixture
 def scanned():
     return pdf_bytes("oj-page3.pdf")
+
+
+@pytest.fixture(autouse=True)
+def stores_are_closed(tmp_path_factory, monkeypatch):
+    """A store left open leaves its empty staging directory behind, so each test gets its own temporary directory and must leave no staging directory in it."""
+    scratch = tmp_path_factory.mktemp("tempdir")
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    yield
+    left = sorted(p.name for p in scratch.glob("scotus-products-*"))
+    assert not left, f"staging left behind by a store never closed: {left}"

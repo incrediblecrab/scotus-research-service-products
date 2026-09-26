@@ -55,7 +55,9 @@ def built(tmp_path, born_digital, scanned):
     ctx = Context(store=store, collection=collection(name="original-jurisdiction-records-and-briefs"), fetcher=site, deadline=time.monotonic() + 600, workers=2)
     sync(ctx, FakeListing(units))
     store.close()
-    return LocalStore(tmp_path)
+    store = LocalStore(tmp_path)
+    yield store
+    store.close()
 
 
 def test_a_built_datasets_card_is_the_one_its_manifest_renders(built):
