@@ -270,7 +270,7 @@ def build_row(ctx, key, unit, data, headers, extracted, now):
 
 
 def same_content(ctx, stored, row):
-    """Whether a fetch returned what is stored: the same bytes, or for an HTML page (whose served bytes carry per-request analytics tokens) the same rendered text."""
+    """Whether a fetch returned what is stored: the same bytes, or for an HTML page (whose served bytes carry values that change per request) the same rendered text."""
     if stored is None:
         return False
     if ctx.collection.html:

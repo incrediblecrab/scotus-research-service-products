@@ -182,7 +182,7 @@ def extract_pdf(data, workdir=None, xcheck=True):
 
 
 def extract_html(data):
-    """An Orders by Circuit page: its text is the rendered text of the content the Court wrote, without the site's scripts, which differ on every request."""
+    """An Orders by Circuit page: its text is the rendered text of the content the Court wrote, without the site's scripts and form fields, which change per request."""
     doc = parse(data)
     found = doc.xpath(CIRCUIT_CONTENT) or doc.xpath('//div[@id="pagemaindiv"]')
     if not found:

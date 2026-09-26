@@ -446,7 +446,7 @@ COLLECTIONS = {c.name: c for c in (
     Collection(
         "orders-by-circuit", "Orders by Circuit", f"{BASE}/orders/ordersbycircuit/",
         term_pages("orders-by-circuit", BASE + "/orders/ordersbycircuit/{yy}"), parse_circuit, typed_dated_item, html=True,
-        notes=("The Court's page says: \"Caution: These electronic orders may contain computer-generated errors or other deviations from the official printed versions.\"", "Each document is an HTML page; the file column holds the page as served, which includes analytics scripts that differ on every request, so file_sha256 does not repeat across downloads. text is the rendered content the Court wrote, without those scripts, and does repeat.",),
+        notes=("The Court's page says: \"Caution: These electronic orders may contain computer-generated errors or other deviations from the official printed versions.\"", "Each document is an HTML page. The file column holds the page as served, which carries values that change from one request to the next (ASP.NET's __VIEWSTATE and __EVENTVALIDATION fields, and the request values of an analytics script), so file_sha256 need not repeat across downloads. text is the rendered content the Court wrote, which leaves those out: one document fetched twice on September 25, 2026, two hours apart, gave different bytes and the same text.",),
     ),
     Collection(
         "granted-noted-cases-list", "Granted/Noted Cases List", f"{BASE}/orders/grantednotedlists.aspx",
