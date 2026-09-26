@@ -6,7 +6,7 @@ import pytest
 
 from conftest import BASE, FakeListing, FakeSite, collection, pdf_bytes, sha256, unit
 from scotus_products.extract import extract_pdf
-from scotus_products.pipeline import MAX_ATTEMPTS, Context, sync
+from scotus_products.pipeline import MAX_ATTEMPTS, Context, codepoints, sync
 from scotus_products.sources import ListingError
 from scotus_products.store import LocalStore
 
@@ -229,3 +229,8 @@ def test_listing_error_from_the_listing_stops_the_run(tmp_path, two_files):
 
     record, _ = run(tmp_path, Broken(units), site)
     assert record["stopped"].startswith("ListingError") and site.gets == []
+
+
+def test_code_points_with_no_standard_meaning_are_counted_in_rows_and_characters():
+    rows = [{"text": "Of\ue405ce and Net\ue406ix"}, {"text": "plane 15 \U000f0001 and 16 \U00100001, index \ufffd \ufffd"}, {"text": "fi as letters, \ufb01 as a ligature"}, {"text": None}, {"text": ""}, {}]
+    assert codepoints(rows) == {"private_use_rows": 2, "private_use": 4, "replacement_rows": 1, "replacement": 2}

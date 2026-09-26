@@ -27,7 +27,7 @@ COLUMN_DOCS = {
     "image_pages": "Pages on which one image covers at least half the page",
     "ocr_pages": "Pages that have text and are image pages, whose text the pipeline takes for an OCR layer",
     "text_source": "born_digital (the PDF's own text; in `text`), scanned or mixed (every page with text, or only some, is an image page, whose text the pipeline takes for OCR; in `ocr_text`), no_text (no page has text), or html",
-    "text": "The verbatim text: pdftotext -raw output of a born-digital PDF, exactly as printed (form feed between pages), or the rendered text of an HTML page. Null when the pipeline takes the file's text for OCR",
+    "text": "The file's own text, unchanged: the text layer of a born-digital PDF as pdftotext -raw prints it (form feed between pages), or the rendered text of an HTML page; see What is verbatim for where that differs from the page. Null when the pipeline takes the file's text for OCR",
     "ocr_text": "The same pdftotext -raw output when the pipeline takes the PDF's text for an OCR layer made by whoever scanned it (see `ocr_pages`). On a scanned page it is OCR, which misreads characters, so it is not verbatim. The same rule catches a born-digital page that one image, such as a map or a photograph, covers at least half of, and that page's text is the file's own",
     "extractor": "Program, version and options that produced `text` or `ocr_text`",
     "xcheck_extractor": "The independent extractor used for the cross-check (pypdf); null when there was no cross-check (only `text` from PDFs is cross-checked)",
@@ -71,6 +71,13 @@ def agree(n):
 FAILURES_SHOWN = 25
 
 
+def codepoint_counts(points, uncounted):
+    if uncounted:
+        return f"These characters are not yet counted in {count(uncounted, 'partition')}, whose summary a run wrote before the pipeline counted them."
+    return (f"{count(points['private_use_rows'], 'row')} of `text` {'holds' if points['private_use_rows'] == 1 else 'hold'} {count(points['private_use'], 'Private Use Area code point')}, "
+            f"and {count(points['replacement_rows'], 'row')} {'holds' if points['replacement_rows'] == 1 else 'hold'} {count(points['replacement'], 'U+FFFD character')}.")
+
+
 def render(manifest):
     manifest = manifest or {}
     collection = COLLECTIONS[manifest["collection"]]
@@ -88,9 +95,15 @@ def render(manifest):
     pages = sum(entry.get("pages") or 0 for entry in entries.values())
     sources = Counter()
     xcheck = Counter()
+    points = Counter()
+    uncounted = 0
     max_delta = 0
     for entry in entries.values():
         sources.update(entry.get("text_sources") or {})
+        if entry.get("codepoints") is None:
+            uncounted += 1
+        else:
+            points.update(entry["codepoints"])
         for key in ("checked", "equal", "equal_nfkd"):
             xcheck[key] += (entry.get("xcheck") or {}).get(key) or 0
         max_delta = max(max_delta, (entry.get("xcheck") or {}).get("max_delta") or 0)
@@ -153,12 +166,13 @@ def render(manifest):
         lines.append("| (none yet) | 0 |")
     lines += [
         "",
-        f"Cross-check of `text` against pypdf: {count(xcheck['checked'], 'file')} compared; {xcheck['equal']:,} {agree(xcheck['equal'])} exactly on the sequence of non-whitespace characters, {xcheck['equal_nfkd']:,} {agree(xcheck['equal_nfkd'])} after NFKD normalization of both sides, and the largest difference is {count(max_delta, 'character')}.",
+        f"Cross-check of `text` against pypdf: {count(xcheck['checked'], 'file')} compared; {xcheck['equal']:,} {agree(xcheck['equal'])} exactly on the sequence of non-whitespace characters, {xcheck['equal_nfkd']:,} {agree(xcheck['equal_nfkd'])} after NFKD normalization of both sides, and the largest difference is {count(max_delta, 'character')}. pypdf reads the same text layer, so agreeing does not show that `text` matches the page, and differing does not show that `text` is wrong: see below.",
         "",
         "## What is verbatim",
         "",
         "- `file` is the file as the server sent it. `file_sha256` lets you check it, and `url` says where it came from.",
         "- `text` is the PDF's own text layer as `pdftotext -raw -enc UTF-8` (poppler) prints it, stored unchanged: line breaks, page headers and footers, and a form feed between pages. `-raw` keeps the characters in the order the file draws them. The default mode was rejected because it removes a hyphen that ends a line and joins the words; `-layout` was rejected because it dropped characters on a sample file. For an HTML page, `text` is the text the page renders.",
+        "- The text layer is the publisher's, and `text` keeps it where it does not say what the page shows. A PDF can declare what a run of its glyphs says (ActualText), and pdftotext prints the declaration in place of the glyphs, so a glyph that a file declares to be no text is not in `text`. A code point from Unicode's Private Use Areas (U+E000 to U+F8FF, and planes 15 and 16) has no standard meaning: a file's font puts a ligature, a bullet, a dash or another sign there, and only `file` shows which. U+FFFD, the replacement character, says only that no character is known for a glyph. " + codepoint_counts(points, uncounted),
         "- `text` holds only born-digital text. When one image covers at least half of a page that has text, the pipeline takes that text for an OCR layer made by whoever scanned the page, and the whole file's text goes to `ocr_text`, to be checked against `file`: on a scanned page it is OCR and not verbatim. The rule errs toward `ocr_text`, because it also catches a born-digital page that one image, such as a map or a photograph, covers at least half of. A file with no text on any page (no_text) has neither.",
         "- Every other text field (`title`, `docket`, `entries`) is the listing page's rendered text, with each run of ASCII whitespace collapsed to one space. No-break spaces, curly quotes and dashes are kept as the page has them.",
         "- `term` and `date` are read from those strings; the strings themselves stay in `entries`.",

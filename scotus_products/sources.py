@@ -389,6 +389,12 @@ def typed_original(unit, today=None):
     return {"term": None, "date": iso_date(row.get("File Date"), today), "docket": match.group(1) if match else None, "title": row.get("Document Title") or entry.get("link_text") or None}
 
 
+# Measured on the rows built September 26, 2026. Shared by the three collections whose files have the two code points.
+LIGATURES = "Where `text` has the Private Use Area code point U+E405 or U+E406, the page prints fi or fl: each of the 196 words that U+E405 occurs in, across Opinions of the Court, Opinions Relating to Orders and U. S. Reports, and each of the 36 that U+E406 occurs in reads as a word or a name with fi or fl in its place, so `text` spells Office `Of\\uE405ce` and Netflix `Net\\uE406ix` (counted September 26, 2026). A search of `text` for such a word misses those rows unless it allows for the two code points."
+# How pdftotext treats a hyphen that a file marks as no text; the collections' notes give their own counts.
+NO_TEXT_HYPHENS = "mark hyphens that end a line as no text (an empty ActualText), and pdftotext prints what a file declares, not the glyph, so `text` lacks {hyphens} hyphens that these files draw. pypdf prints them, so these rows have `xcheck_equal` false; `file` has them."
+
+
 COLLECTIONS = {c.name: c for c in (
     Collection(
         "opinions-of-the-court", "Opinions of the Court", f"{BASE}/opinions/slipopinion/",
@@ -396,6 +402,7 @@ COLLECTIONS = {c.name: c for c in (
         notes=(
             "The Court's page says: \"Opinions are posted on the website upon release in slip opinion format. Slip opinions remain posted until replaced with opinions edited to reflect the usual publication style of the United States Reports, including final pagination that will carry forward unchanged in the corresponding preliminary prints and the bound volumes of the United States Reports.\" A file the listing stops linking stays in the dataset with listed = false.",
             "For older terms the listing can link an opinion to a page inside a bound volume or preliminary print rather than to a file of its own. On September 25, 2026 it did so for all 73 entries of October Term 2018, all 63 of 2019 and 15 of the 68 of 2020, and the October Term 2017 page linked all 56 of its entries to four preliminary prints, which the server answered with 404 Not Found. Such a row holds the whole volume, with one entry per opinion and the page its link points to.",
+            LIGATURES,
         ),
     ),
     Collection(
@@ -404,6 +411,7 @@ COLLECTIONS = {c.name: c for c in (
         notes=(
             "Several opinions can share one PDF; the row holds the file once, with one entry per opinion, and an entry's page is the #page anchor of its link where the link has one.",
             "The pages for October Terms 2005 through 2010 list 57 opinions in tables without a link to any file, only a citation to the U. S. Reports (counted September 25, 2026), so those terms have no rows here.",
+            LIGATURES,
         ),
     ),
     Collection(
@@ -418,6 +426,8 @@ COLLECTIONS = {c.name: c for c in (
             "Older volumes are scans of the printed books. A scan's only text is the OCR layer inside the file, which is in ocr_text and is not verbatim; text_source on each row says which kind of file it is, and the table above counts them.",
             "Seven bound volumes that are not scans are marked mixed, so their text is in ocr_text too: volumes 515, 532, 533, 534, 545, 571 and 576. In each, one to three pages carry an image, such as a map or a photograph, that covers at least half of the page, and the text on those pages is a heading, a caption or a map's labels, such as \"Red arrow points to Ten Commandments Monument.\" in volume 545. That text is drawn as visible type, while the scan of volume 500 draws its OCR layer as invisible text (render mode 3); both were examined on September 26, 2026.",
             "The Court's page says: \"PDFs of partial volumes made available for the convenience of the bench and bar, as well as page proofs of volumes not yet published by GPO, will be posted bearing a “page proof” watermark.\"",
+            LIGATURES,
+            "Measured September 26, 2026: 13 bound volumes from 529 to 544 set some signs in a font that names its glyphs H and a number, such as H11503, and gives no Unicode value for them, and pdftotext takes the number for a code point, so `text` has 218 characters from blocks such as CJK and Coptic that the volumes do not use. Page 596 of the file of volume 541 prints \"1.5%×2×$2,000=$60\", and `text` has \"1.5%⳯2⳯$2,000⳱$60\"; its page 1097 prints two empty check boxes, and `text` has 䡺 for each. For all 218, the file holds a glyph named H and the character's code point in decimal; pypdf prints the glyph's name instead (/H11033).",
         ),
     ),
     Collection(
@@ -426,6 +436,7 @@ COLLECTIONS = {c.name: c for c in (
         notes=(
             "The Court's transcript pages say: \"Same-day transcripts are considered official but subject to final review.\" and \"Transcripts for oral arguments prior to October Term 2000 have been scanned from the Supreme Court Library collection. Please disregard any stray or handwritten markings on these copies.\"",
             "The Court's page on the availability of transcripts says: \"(Heritage Reporting Corporation has provided transcripts for the Court beginning in October Term 2017; prior to that Term, Alderson Reporting Corporation provided the transcripts.)\"",
+            "Measured September 26, 2026: 273 transcripts of October Terms 2004 to 2010 " + NO_TEXT_HYPHENS.format(hyphens="17,322") + " The transcript of 07-1372 prints \"purposes --\" at the end of a line on its page 4, and `text` has \"purposes -\". In 50 other transcripts, of October Terms 2004 and 2005, the files draw hyphens with code 0xAD, which `text` gives as a hyphen (U+002D) and pypdf as a soft hyphen (U+00AD), and that accounts for the whole difference the cross-check counts.",
         ),
     ),
     Collection(
@@ -445,6 +456,7 @@ COLLECTIONS = {c.name: c for c in (
         notes=(
             "The Court's page says: \"Caution: These electronic orders may contain computer-generated errors or other deviations from the official printed versions. Moreover, all order lists and miscellaneous orders are replaced within a few months by paginated versions of them in a preliminary print of the United States Reports, and one year after the issuance of the preliminary print by the final version of the orders in a U. S. Reports bound volume. In case of discrepancies between the print and electronic versions of orders, the print version controls. In case of discrepancies between order lists or miscellaneous orders and any later official version of them, the later version controls.\"",
             "Four files are marked mixed, so their text is in ocr_text: \"Rules of Appellate Procedure\", \"Rules of Bankruptcy Procedure\", \"Rules of Criminal Procedure\" and \"Rules of Civil Procedure\", each dated 03/26/09 on the listing. In each, the first three pages are born-digital and every later page is a scan with an invisible OCR layer (examined September 26, 2026).",
+            "Measured September 26, 2026: 33 files of October Terms 2005, 2009 and 2010 " + NO_TEXT_HYPHENS.format(hyphens="1,319"),
         ),
     ),
     Collection(

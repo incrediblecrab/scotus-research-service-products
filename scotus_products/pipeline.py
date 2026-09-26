@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections import Counter, defaultdict, deque
@@ -51,6 +52,10 @@ CLEAN_STOPS = (None, "budget")
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 KEPT_HEADERS = ("content-type", "content-length", "last-modified", "etag")
 LISTING_COLUMNS = ("url", "term", "date", "docket", "title", "entries")
+# The columns summarize() reads, so a partition's summary can be counted again from its file.
+SUMMARY_COLUMNS = ("text_source", "text", "xcheck_equal", "xcheck_equal_nfkd", "xcheck_delta", "pages", "listed", "term")
+# Unicode's Private Use Areas: code points with no standard meaning.
+PRIVATE_USE = re.compile("[\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
 
 
 class FetchFailed(RuntimeError):
@@ -432,7 +437,16 @@ def summarize(rows):
         "delisted": sum(1 for row in rows if not row["listed"]),
         "terms": [min((row["term"] for row in rows if row.get("term") is not None), default=None), max((row["term"] for row in rows if row.get("term") is not None), default=None)],
         "undated": sum(1 for row in rows if row.get("term") is None),
+        "codepoints": codepoints(rows),
     }
+
+
+def codepoints(rows):
+    """Characters in `text` that do not say what the page shows: Private Use Area code points, and U+FFFD, the replacement character. Counted in rows and in characters."""
+    texts = [row["text"] for row in rows if row.get("text")]
+    private = [len(PRIVATE_USE.findall(text)) for text in texts]
+    replacement = [text.count("\ufffd") for text in texts]
+    return {"private_use_rows": sum(1 for n in private if n), "private_use": sum(private), "replacement_rows": sum(1 for n in replacement if n), "replacement": sum(replacement)}
 
 
 def _write(ctx, manifest, key, units, stored, todo, done, counts, dirty, final):

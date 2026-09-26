@@ -7,6 +7,7 @@ import pytest
 
 from conftest import FakeListing, FakeSite, unit
 from scotus_products import cli
+from scotus_products.pipeline import new_manifest
 from scotus_products.sources import COLLECTIONS
 
 NAME = "in-chambers-opinions"
@@ -59,3 +60,43 @@ def test_a_run_stopped_by_low_disk_exits_1_and_says_why(tmp_path, site, capsys):
 def test_a_card_needs_a_manifest(tmp_path):
     with pytest.raises(SystemExit, match="no manifest.json"):
         main("card", "--dataset", NAME, "--local", str(tmp_path), "--workdir", str(tmp_path))
+
+
+def test_summarize_counts_a_summary_written_before_a_new_count_and_leaves_a_current_one(tmp_path, site, capsys):
+    local = ["--dataset", NAME, "--local", str(tmp_path), "--workdir", str(tmp_path)]
+    assert main("run", *local) == 0
+    capsys.readouterr()
+    path = tmp_path / NAME / "manifest.json"
+    manifest = json.loads(path.read_text())
+    (key, entry), = manifest["partitions"].items()
+    counted = entry.pop("codepoints")
+    path.write_text(json.dumps(manifest))
+    assert main("card", *local, "--write") == 0 and "not yet counted in 1 partition" in (tmp_path / NAME / "README.md").read_text()
+    assert main("summarize", *local) == 0 and json.loads(capsys.readouterr().out)["changed"] == {key: ["codepoints"]}
+    assert json.loads(path.read_text())["partitions"][key]["codepoints"] == counted
+    assert main("summarize", *local) == 0 and json.loads(capsys.readouterr().out)["changed"] == {}
+    assert main("verify", *local) == 0
+
+
+def test_card_write_on_the_hub_authenticates_and_a_card_to_print_does_not(monkeypatch, capsys):
+    tokens, commits = [], []
+
+    class Hub:
+        def __init__(self, repo_id, workdir=None, token=None, card=None):
+            tokens.append(token)
+
+        def read_manifest(self):
+            return new_manifest(COLLECTIONS[NAME])
+
+        def stage_manifest(self, manifest):
+            pass
+
+        def commit(self, message):
+            commits.append(message)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("scotus_products.store.HubStore", Hub)
+    assert main("card", "--dataset", NAME) == 0 and main("card", "--dataset", NAME, "--write") == 0
+    assert tokens == [False, None] and commits == [f"{NAME}: card"]

@@ -1,4 +1,4 @@
-"""python -m scotus_products {run,card,verify,list} --dataset NAME: sync a collection, render its card, check it, or print its listing counts. --dataset all runs every collection in turn."""
+"""python -m scotus_products {run,card,verify,list,summarize} --dataset NAME: sync a collection, render its card, check it, print its listing counts, or count each partition's summary again from its rows. --dataset all runs every collection in turn."""
 
 import argparse
 import json
@@ -10,9 +10,9 @@ from pathlib import Path
 
 from .card import render
 from .http import Fetcher
-from .pipeline import CLEAN_STOPS, Context, sync
+from .pipeline import CLEAN_STOPS, SUMMARY_COLUMNS, Context, summarize, sync
 from .sources import COLLECTIONS, Listing
-from .store import CARD
+from .store import CARD, partition_path
 
 ALL = "all"
 
@@ -61,7 +61,7 @@ def cmd_run(args):
 
 def cmd_card(args):
     for name in names(args):
-        store = open_store(args, COLLECTIONS[name])
+        store = open_store(args, COLLECTIONS[name], write=args.write)
         try:
             manifest = store.read_manifest()
             if not manifest:
@@ -72,6 +72,30 @@ def cmd_card(args):
                 store.commit(f"{name}: card")
             else:
                 print(text)
+        finally:
+            store.close()
+    return 0
+
+
+def cmd_summarize(args):
+    """Counts each partition's summary again from its Parquet file, for summaries a run wrote before summarize() counted something new; saves the manifest and card only if a summary changed, and prints which keys did."""
+    for name in names(args):
+        store = open_store(args, COLLECTIONS[name], write=True)
+        try:
+            manifest = store.read_manifest()
+            if not manifest:
+                raise SystemExit(f"{name}: no manifest.json")
+            changed = {}
+            for key, entry in sorted(manifest["partitions"].items()):
+                summary = summarize(store.read_table(entry.get("file") or partition_path(key), list(SUMMARY_COLUMNS)).to_pylist())
+                keys = sorted(k for k, value in summary.items() if entry.get(k) != value)
+                if keys:
+                    changed[key] = keys
+                    entry.update(summary)
+            if changed:
+                store.stage_manifest(manifest)
+                store.commit(f"{name}: partition summaries counted again")
+            print(json.dumps({"collection": name, "partitions": len(manifest["partitions"]), "changed": changed}, indent=1), flush=True)
         finally:
             store.close()
     return 0
@@ -122,7 +146,7 @@ def cmd_list(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m scotus_products")
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("run", "card", "verify", "list"):
+    for command in ("run", "card", "verify", "list", "summarize"):
         p = sub.add_parser(command)
         p.add_argument("--dataset", required=True, choices=[*COLLECTIONS, ALL])
         p.add_argument("--local", help="keep datasets in this directory (one subdirectory per collection) instead of on the Hub")
@@ -146,4 +170,4 @@ def main(argv=None):
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    return {"run": cmd_run, "card": cmd_card, "verify": cmd_verify, "list": cmd_list}[args.command](args)
+    return {"run": cmd_run, "card": cmd_card, "verify": cmd_verify, "list": cmd_list, "summarize": cmd_summarize}[args.command](args)
