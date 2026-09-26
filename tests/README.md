@@ -2,7 +2,7 @@
 
 Offline tests: `pip install '.[test]'`, then `python -m pytest -q`. They use no network; the PDF tests need poppler.
 
-**Objective:** pin down the behavior the verbatim record depends on. Each load-bearing check was tested by planting the defect it should catch in a copy of the code (30 defects, last run September 26, 2026): unchanged, the copy passed all 159 tests, and every planted defect failed at least one.
+**Objective:** pin down the behavior the verbatim record depends on. Each load-bearing check was tested by planting the defect it should catch in a copy of the code (33 defects, last run September 26, 2026): unchanged, the copy passed all 159 tests, and every planted defect failed at least one.
 
 **Inputs:** real pages and PDFs in [`fixtures/`](fixtures/README.md), and a stand-in site and listing.
 

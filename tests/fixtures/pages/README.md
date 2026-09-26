@@ -2,7 +2,7 @@
 
 Pages from www.supremecourt.gov, saved September 25, 2026: gzipped response bodies, each named for its path with `/`, `.` and `-` written as `_`. `test_sources.py` pins each listing page's entry, file and partition counts.
 
-Every page loads Akamai's boomerang script from `s.go-mpulse.net` with the site's beacon key, `window.BOOMR_API_key`: one public value served to every visitor, which gitleaks 8.30.1 reports as a generic API key (16 findings in 15 files). It is no credential of this project; the pages stay as served. The Orders by Circuit document carries values that change per request, so a fresh copy's bytes may differ; that collection's note in `sources.py` explains.
+Every page loads Akamai's boomerang script from `s.go-mpulse.net` with the site's beacon key, `window.BOOMR_API_key`, a public value served to every visitor. gitleaks 8.30.1, opening archives (`--max-archive-depth 1`), reports it as a generic API key: 16 findings in 15 files. It is no credential of this project; the pages stay as served. The Orders by Circuit document carries values that change per request, so a fresh copy's bytes may differ, as `sources.py` notes.
 
 | File | Page |
 |---|---|
