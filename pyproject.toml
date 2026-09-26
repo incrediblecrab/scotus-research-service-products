@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scotus-research-service-products"
+version = "0.1.0"
+description = "Builds and keeps current verbatim Hugging Face datasets of the documents the Supreme Court of the United States publishes on www.supremecourt.gov."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+# Exact versions: text is stored as these extractors print it, and these are the versions the tests and the local build used.
+dependencies = [
+    "httpx==0.28.1",
+    "lxml==6.1.3",
+    "pyarrow==25.0.1",
+    "pypdf==6.19.0",
+    "huggingface_hub==1.32.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1", "PyYAML==6.0.3"]
+
+[tool.setuptools]
+packages = ["scotus_products"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
