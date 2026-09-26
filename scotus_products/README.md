@@ -9,7 +9,7 @@ The pipeline package, run as `python -m scotus_products {list,run,verify,card} -
 **Files:**
 
 - `cli.py`, `__main__.py`: the commands. `list` reads the listing pages only and prints what they hold. `run` syncs a collection within a time budget. `verify` checks a dataset against its manifest: `--deep` also hashes every file and extracts its text again, `--live` compares the dataset with the listing now, and `--redownload N` fetches N files again and compares them. `card` renders the dataset card.
-- `sources.py`: the eleven collections: which pages list each one, how a page becomes entries and files, how files are partitioned and typed, and each collection's notes, which quote the Court's pages.
+- `sources.py`: the eleven collections: which pages list each one, how a page becomes entries and files, how files are partitioned and typed, and each collection's notes: quotations of the Court's pages, and counts dated to the day they were taken.
 - `markup.py`: the text an HTML page renders, character for character, and the resolution of links to file ids and URLs.
 - `extract.py`: PDF text with `pdftotext -raw`, the scanned-page test with `pdfimages -list`, and the cross-check against pypdf. For an HTML document, its rendered text.
 - `http.py`: pacing per host, the robots.txt guard, bounded retries, and no redirects.

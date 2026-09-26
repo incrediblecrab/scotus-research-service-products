@@ -22,7 +22,7 @@ None of the Hub datasets is published yet. The build so far is local, in `local-
 
 - `file` is the file byte for byte, with its SHA-256.
 - `text` is the text layer of a born-digital PDF exactly as `pdftotext -raw` prints it, or the text an HTML page renders.
-- `ocr_text` holds the text layer of a scanned PDF, which whoever scanned it made by OCR. It is not verbatim, and it never goes in `text`.
+- `ocr_text` holds the text layer of a PDF that has text on a page one image covers at least half of. The pipeline takes such text for OCR by whoever scanned the page, so it is not verbatim, and it never goes in `text`.
 - Listing fields keep the page's characters. The only change is that each run of ASCII whitespace becomes one space.
 
 `verify --deep` hashes every stored file again and extracts its text again, and reports any row whose text differs by even one character.
@@ -39,5 +39,5 @@ None of the Hub datasets is published yet. The build so far is local, in `local-
 **Try it:** with Python 3.14 and poppler installed, run `pip install .`, then:
 
 - `python -m scotus_products list --dataset all` reads every listing page and prints each collection's counts per partition. It fetches no document.
-- `python -m scotus_products run --dataset in-chambers-opinions --local /tmp/scotus` builds the smallest collection, which is one file.
+- `python -m scotus_products run --dataset in-chambers-opinions --local /tmp/scotus` builds the smallest collection, which held one file on September 25, 2026.
 - `python -m scotus_products verify --dataset in-chambers-opinions --local /tmp/scotus --deep --live` checks that build against its manifest, its files and the listing.
