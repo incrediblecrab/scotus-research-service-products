@@ -1,10 +1,8 @@
 # pages
 
-Pages from www.supremecourt.gov, saved on September 25, 2026: each file is a response body, gzipped. A file's name is the page's path with `/`, `.` and `-` written as `_`. `test_sources.py` counts the entries, files and partitions it expects on each listing page.
+Pages from www.supremecourt.gov, saved September 25, 2026: gzipped response bodies, each named for its path with `/`, `.` and `-` written as `_`. `test_sources.py` pins each listing page's entry, file and partition counts.
 
-Every page loads Akamai's boomerang script from `s.go-mpulse.net` and carries the site's beacon key in `window.BOOMR_API_key`, one value served to every visitor. gitleaks 8.30.1 reports it as a generic API key (16 findings in these 15 files on September 25, 2026). It is part of each page as the server sent it, not a credential of this project, and the files are kept as served.
-
-The Orders by Circuit document below, fetched again by the build on September 25, 2026, differed from its fixture in its `__VIEWSTATE` and `__EVENTVALIDATION` fields and in its two copies of the boomerang script, whose request values (an IP address and the time of the request among them) differed, and nowhere else. It rendered the same text, and rendered text is how the pipeline compares a page it fetches again.
+Every page loads Akamai's boomerang script from `s.go-mpulse.net` with the site's beacon key, `window.BOOMR_API_key`: one public value served to every visitor, which gitleaks 8.30.1 reports as a generic API key (16 findings in 15 files). It is no credential of this project; the pages stay as served. The Orders by Circuit document carries values that change per request, so a fresh copy's bytes may differ; that collection's note in `sources.py` explains.
 
 | File | Page |
 |---|---|
