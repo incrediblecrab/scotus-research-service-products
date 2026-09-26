@@ -191,4 +191,5 @@ def test_the_card_says_where_text_is_not_what_the_page_prints(built):
     body = render(built.read_manifest())
     assert "exactly as printed" not in body
     assert "A PDF can declare what a run of its glyphs says (ActualText), and pdftotext prints the declaration in place of the glyphs" in body
+    assert "a letter set in small capitals is whatever character the file maps it to" in body
     assert "pypdf reads the same text layer, so agreeing does not show that `text` matches the page" in body
