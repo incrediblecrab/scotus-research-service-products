@@ -106,8 +106,17 @@ def render(manifest):
     if entries:
         lines += ["configs:", "- config_name: default", "  data_files:", "  - split: train", "    path: data/*.parquet"]
     lines += ["---", "", f"# Supreme Court of the United States: {collection.title}", ""]
+    incomplete = sorted(key for key, entry in entries.items() if not entry.get("complete"))
+    # Partitions the latest listing links files in that have no entry: the run that read it stopped (budget, disk) before it reached them.
+    unreached = sorted(key for key, n in (seen.get("partitions") or {}).items() if n and key not in entries)
+    whole = bool(listing.get("at")) and not incomplete and not unreached and not missing and listed == seen.get("count")
+    where = f"the Supreme Court's website lists under [{collection.title}]({collection.source_page})"
+    if whole:
+        lead = f"Every document file that {where}, with the file itself, byte for byte, and its text. One row per file."
+    else:
+        lead = f"Document files that {where}, each with the file itself, byte for byte, and its text. One row per file. This dataset does not hold every file the listing links: the status below says what it holds and where the gaps are."
     lines += [
-        f"Every document file that the Supreme Court's website lists under [{collection.title}]({collection.source_page}), with the file itself, byte for byte, and its text. One row per file.",
+        lead,
         "",
         f"Nothing here is edited by hand, and no text is corrected, normalized or generated. The pipeline and its tests are in [{GITHUB.removeprefix('https://')}]({GITHUB}), and this card is rendered from `manifest.json` in the same commit.",
         "",
@@ -122,9 +131,11 @@ def render(manifest):
         lines += ["", f"Last complete run: {listing['at']}."]
     else:
         lines += ["", "No run has yet brought every partition up to date with the listing."]
-    incomplete = sorted(key for key, entry in entries.items() if not entry.get("complete"))
     if incomplete:
         lines += ["", f"{count(len(incomplete), 'partition')} {'is' if len(incomplete) == 1 else 'are'} not yet complete: {', '.join(incomplete[:FAILURES_SHOWN])}{' ...' if len(incomplete) > FAILURES_SHOWN else ''}."]
+    if unreached:
+        files = sum(seen["partitions"][key] for key in unreached)
+        lines += ["", f"The listing of {seen.get('at')} links {count(files, 'file')} in {count(len(unreached), 'partition')} that no run has reached yet, so {'it holds' if len(unreached) == 1 else 'they hold'} no rows: {', '.join(unreached[:FAILURES_SHOWN])}{' ...' if len(unreached) > FAILURES_SHOWN else ''}."]
     if missing:
         lines += ["", f"### Files not stored", "",
                   f"The listing links these files, but fetching or reading them failed. A file is tried on every run until it has failed {MAX_ATTEMPTS} times, then once every {RETRY_AFTER_HOURS} hours. {count(len(unstored), 'file')} {'has' if len(unstored) == 1 else 'have'} failed {MAX_ATTEMPTS} times.", "",

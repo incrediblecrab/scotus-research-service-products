@@ -1,5 +1,6 @@
 """The dataset card: rendered from the manifest alone, with front matter the Hub can parse, the license each collection needs, and every gap shown."""
 
+import copy
 import time
 
 import pytest
@@ -78,9 +79,75 @@ def test_the_card_does_not_depend_on_the_order_of_the_manifests_keys(built):
 
 def test_the_card_names_every_gap(built):
     body = render(built.read_manifest())
+    assert "This dataset does not hold every file the listing links: the status below says what it holds and where the gaps are." in body and "Every document file" not in body
     assert "1 partition is not yet complete: OT2023." in body
     assert "| [pdfs/gone.pdf](https://www.supremecourt.gov/pdfs/gone.pdf) | 1 | FetchFailed: HTTP 404 for https://www.supremecourt.gov/pdfs/gone.pdf |" in body
     assert "0 files have failed 3 times." in body
+
+
+def manifest_of(path):
+    store = LocalStore(path)
+    try:
+        return store.read_manifest()
+    finally:
+        store.close()
+
+
+@pytest.fixture
+def whole(tmp_path, born_digital, scanned):
+    """A dataset that holds every file its stand-in listing links."""
+    units = [unit("pdfs/a.pdf"), unit("pdfs/b.pdf", partition="OT2024", term=2024)]
+    store = LocalStore(tmp_path, card=render)
+    ctx = Context(store=store, collection=collection(name="original-jurisdiction-records-and-briefs"), fetcher=FakeSite({units[0].url: born_digital, units[1].url: scanned}), deadline=time.monotonic() + 600, workers=2)
+    sync(ctx, FakeListing(units))
+    store.close()
+    return manifest_of(tmp_path)
+
+
+EVERY = "Every document file that the Supreme Court's website lists under"
+
+
+def test_the_card_claims_every_file_only_when_no_gap_shows(whole):
+    assert whole["seen"]["partitions"] == {"OT2023": 1, "OT2024": 1}
+    assert EVERY in render(whole) and "does not hold every file" not in render(whole)
+    failure = {"partition": "OT2023", "url": "https://www.supremecourt.gov/pdfs/c.pdf", "attempts": 3, "error": "FetchFailed: HTTP 404", "at": "2026-09-26T00:00:00Z"}
+    gaps = {
+        "no complete run": lambda m: m.pop("listing"),
+        "a partition not complete": lambda m: m["partitions"]["OT2023"].update(complete=False),
+        "a partition no run reached": lambda m: m["seen"]["partitions"].update(OT2022=1),
+        "a file that failed for good": lambda m: m["failures"].update({"pdfs/c.pdf": failure}),
+        "fewer listed rows than listed files": lambda m: m["seen"].update(count=3),
+    }
+    for gap, plant in gaps.items():
+        manifest = copy.deepcopy(whole)
+        plant(manifest)
+        body = render(manifest)
+        assert EVERY not in body and "This dataset does not hold every file the listing links" in body, gap
+
+
+def test_the_card_names_the_partitions_a_stopped_run_never_reached(tmp_path, born_digital):
+    """The disk runs low before the first download: the partition the run was on is incomplete, and the one after it has no entry at all."""
+    units = [unit("pdfs/a.pdf"), unit("pdfs/c.pdf"), unit("pdfs/b.pdf", partition="OT2024", term=2024)]
+    store = LocalStore(tmp_path, card=render)
+    ctx = Context(store=store, collection=collection(name="original-jurisdiction-records-and-briefs"), fetcher=FakeSite({u.url: born_digital for u in units}), deadline=time.monotonic() + 600, workers=2, min_free_bytes=1 << 60)
+    record = sync(ctx, FakeListing(units))
+    store.close()
+    manifest = manifest_of(tmp_path)
+    assert record["stopped"].startswith("LowDisk") and sorted(manifest["partitions"]) == ["OT2024"]
+    body = render(manifest)
+    assert "1 partition is not yet complete: OT2024." in body
+    assert f"The listing of {manifest['seen']['at']} links 2 files in 1 partition that no run has reached yet, so it holds no rows: OT2023." in body
+    assert EVERY not in body
+
+
+def test_a_partition_the_listing_gives_no_files_is_not_called_unreached(whole):
+    manifest = copy.deepcopy(whole)
+    manifest["seen"]["partitions"]["OT2022"] = 0
+    body = render(manifest)
+    assert "no run has reached" not in body and EVERY in body
+    manifest["seen"]["partitions"].update({f"OT19{n:02d}": 2 for n in range(FAILURES_SHOWN + 1)})
+    assert f"links {2 * (FAILURES_SHOWN + 1)} files in {FAILURES_SHOWN + 1} partitions that no run has reached yet, so they hold no rows: OT1900, OT1901" in render(manifest)
+    assert f"OT19{FAILURES_SHOWN - 1:02d} ...." in render(manifest)
 
 
 def test_a_long_failure_list_is_cut_with_a_count_of_the_rest(built):

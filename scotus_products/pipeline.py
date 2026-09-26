@@ -207,7 +207,7 @@ def sync(ctx, listing):
             partitions.setdefault(unit.partition, {})[uid] = unit
         record = {"count": len(units), "entries": head["entries"], "pages": listing.pages, "at": started,
                   "partitions": {key: len(partitions[key]) for key in sorted(partitions)}}
-        manifest["seen"] = {"count": len(units), "entries": head["entries"], "at": started}
+        manifest["seen"] = {key: record[key] for key in ("count", "entries", "at", "partitions")}
         with ThreadPoolExecutor(max_workers=max(1, ctx.workers)) as pool:
             for key in order(manifest, partitions):
                 if ctx.only is not None and key not in ctx.only:

@@ -2,7 +2,7 @@
 
 Offline tests: `pip install '.[test]'`, then `python -m pytest -q`. They use no network, but the PDF tests run poppler's `pdftotext`, `pdfinfo` and `pdfimages`, so poppler must be installed.
 
-**Objective:** pin down the behavior the verbatim record depends on. Each load-bearing check was tested by planting the defect it should catch in a copy of the code and running the suite (September 25, 2026). Unchanged, the copy passed all 151 tests, and every planted defect failed at least one:
+**Objective:** pin down the behavior the verbatim record depends on. Each load-bearing check was tested by planting the defect it should catch in a copy of the code and running the suite (last run September 26, 2026). Unchanged, the copy passed all 154 tests, and every planted defect failed at least one:
 
 | Planted defect | Tests failed | One of them |
 |---|---:|---|
@@ -22,6 +22,10 @@ Offline tests: `pip install '.[test]'`, then `python -m pytest -q`. They use no 
 | `--revalidate-all` ignored when choosing the partitions to open | 3 | `test_a_stored_file_that_cannot_be_fetched_again_keeps_its_row` |
 | The card listing a stored file among the files not stored | 1 | `test_a_stored_file_that_failed_again_is_not_called_unstored` |
 | The card giving every collection the sentence for mutable ones | 1 | `test_the_card_says_which_stored_files_are_asked_about` |
+| The last listing's per-partition file counts not kept | 3 | `test_the_card_names_the_partitions_a_stopped_run_never_reached` |
+| The card claiming every listed file whatever the gaps | 3 | `test_the_card_claims_every_file_only_when_no_gap_shows` |
+| The card never naming the partitions no run has reached | 3 | `test_the_card_names_the_partitions_a_stopped_run_never_reached` |
+| The card calling a partition with no listed files unreached | 1 | `test_a_partition_the_listing_gives_no_files_is_not_called_unreached` |
 
 **Inputs:** real pages and PDFs from www.supremecourt.gov in [`fixtures/`](fixtures/README.md), and a stand-in site and listing in `conftest.py`.
 
@@ -35,5 +39,5 @@ Offline tests: `pip install '.[test]'`, then `python -m pytest -q`. They use no 
 - `test_pipeline.py`: the sync loop: a first run, an idle run, files dropped from and restored to the listing, changed entries without a refetch, failures and retries, the emptied-page check, mutable files, `--revalidate-all`, a stored file that cannot be fetched again, budget stops, the disk floor and the writer lease.
 - `test_store.py`: Parquet round trips and row groups, the local commit, and the Hub commit fence against a fake Hub.
 - `test_verify.py`: each planted data defect is named.
-- `test_card.py`: the card's front matter and license lines, its gaps (a stored file that failed again is not called unstored), which stored files each run asks about, and its independence from key order.
+- `test_card.py`: the card's front matter and license lines, its gaps (a stored file that failed again is not called unstored, and the partitions a stopped run never reached are named), a first sentence that claims every listed file only when no gap shows, which stored files each run asks about, and its independence from key order.
 - `test_cli.py`: exit codes, the card check, and `--dataset all`.
