@@ -180,6 +180,11 @@ def test_counts_and_sizes_read_as_english():
 def test_the_card_counts_the_code_points_that_do_not_say_what_the_page_shows(built):
     manifest = built.read_manifest()
     assert [entry["codepoints"] for entry in manifest["partitions"].values()] == [{"private_use_rows": 0, "private_use": 0, "replacement_rows": 0, "replacement": 0}] * 2
+    assert "No row of `text` holds a Private Use Area code point or U+FFFD." in render(manifest)
+    manifest["partitions"]["OT2023"]["codepoints"] = {"private_use_rows": 2, "private_use": 5, "replacement_rows": 0, "replacement": 0}
+    assert "2 rows of `text` hold 5 Private Use Area code points, and none holds U+FFFD." in render(manifest)
+    manifest["partitions"]["OT2023"]["codepoints"] = {"private_use_rows": 0, "private_use": 0, "replacement_rows": 1, "replacement": 1}
+    assert "No row of `text` holds a Private Use Area code point, and 1 row holds 1 U+FFFD character." in render(manifest)
     manifest["partitions"]["OT2023"]["codepoints"] = {"private_use_rows": 2, "private_use": 5, "replacement_rows": 1, "replacement": 1}
     assert "2 rows of `text` hold 5 Private Use Area code points, and 1 row holds 1 U+FFFD character." in render(manifest)
     del manifest["partitions"]["OT2024"]["codepoints"]
@@ -191,5 +196,5 @@ def test_the_card_says_where_text_is_not_what_the_page_prints(built):
     body = render(built.read_manifest())
     assert "exactly as printed" not in body
     assert "A PDF can declare what a run of its glyphs says (ActualText), and pdftotext prints the declaration in place of the glyphs" in body
-    assert "a letter set in small capitals is whatever character the file maps it to" in body
+    assert "`text` is plain text and marks no type style, such as italics or underlining, and a letter set in small capitals is whatever character the file maps it to" in body
     assert "pypdf reads the same text layer, so agreeing does not show that `text` matches the page" in body

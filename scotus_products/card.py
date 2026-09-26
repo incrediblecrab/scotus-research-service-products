@@ -74,8 +74,12 @@ FAILURES_SHOWN = 25
 def codepoint_counts(points, uncounted):
     if uncounted:
         return f"These characters are not yet counted in {count(uncounted, 'partition')}, whose summary a run wrote before the pipeline counted them."
-    return (f"{count(points['private_use_rows'], 'row')} of `text` {'holds' if points['private_use_rows'] == 1 else 'hold'} {count(points['private_use'], 'Private Use Area code point')}, "
-            f"and {count(points['replacement_rows'], 'row')} {'holds' if points['replacement_rows'] == 1 else 'hold'} {count(points['replacement'], 'U+FFFD character')}.")
+    private, private_rows, replacement, replacement_rows = (points[key] for key in ("private_use", "private_use_rows", "replacement", "replacement_rows"))
+    if not private and not replacement:
+        return "No row of `text` holds a Private Use Area code point or U+FFFD."
+    first = f"{count(private_rows, 'row')} of `text` {'holds' if private_rows == 1 else 'hold'} {count(private, 'Private Use Area code point')}" if private else "No row of `text` holds a Private Use Area code point"
+    second = f"{count(replacement_rows, 'row')} {'holds' if replacement_rows == 1 else 'hold'} {count(replacement, 'U+FFFD character')}" if replacement else "none holds U+FFFD"
+    return f"{first}, and {second}."
 
 
 def render(manifest):
