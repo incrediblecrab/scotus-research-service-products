@@ -16,6 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 from huggingface_hub import CommitOperationAdd, HfApi, HfFileSystem, hf_hub_download
@@ -63,6 +64,8 @@ CARD = "README.md"
 ROW_GROUP_BYTES = 64 << 20
 COMMIT_ATTEMPTS = 4
 RETRYABLE = (408, 429, 500, 502, 503, 504)
+# Failures with no HTTP status that are still a busy Hub or network, so they are retried as well: a dropped connection or timeout, and a README check answered with a page that is not JSON. huggingface_hub 1.32.0 parses the validate-yaml body before it checks the status, so a busy Hub raises JSONDecodeError there, before anything is uploaded; the Fed scheduled run of September 27, 2026 stopped on one.
+TRANSIENT = (httpx.TransportError, json.JSONDecodeError)
 # Measured September 23, 2026 on a scratch dataset (for the CRS datasets this pipeline is adapted from): a commit whose parent_commit is no longer the branch head answers 412 Precondition Failed.
 CONFLICT = 412
 log = logging.getLogger("scotus_products")
@@ -370,7 +373,7 @@ class HubStore(_Staging):
             local.unlink(missing_ok=True)
 
     def commit(self, message):
-        """One atomic commit of everything staged, on top of the last commit this store saw. Retries rate limits and server errors; a retry that finds its own manifest already at the head counts as landed."""
+        """One atomic commit of everything staged, on top of the last commit this store saw. Retries rate limits, server errors and the TRANSIENT failures; a retry that finds its own manifest already at the head counts as landed."""
         if not self.staged:
             return None
         if self.superseded:
@@ -380,8 +383,9 @@ class HubStore(_Staging):
             try:
                 oid = self.api.create_commit(self.repo_id, operations=operations, commit_message=message, repo_type="dataset", parent_commit=self.revision).oid
                 break
-            except HfHubHTTPError as error:
-                status = getattr(error.response, "status_code", None)
+            except (HfHubHTTPError, *TRANSIENT) as error:
+                http = isinstance(error, HfHubHTTPError)
+                status = getattr(error.response, "status_code", None) if http else None
                 if status == CONFLICT:
                     oid = self._landed()
                     if oid:
@@ -389,9 +393,9 @@ class HubStore(_Staging):
                         break
                     self.superseded = Superseded(f"{self.repo_id} has a commit this run did not write (its last commit was {self.revision[:12]})")
                     raise self.superseded from None
-                if attempt == COMMIT_ATTEMPTS - 1 or status not in RETRYABLE:
+                if attempt == COMMIT_ATTEMPTS - 1 or (http and status not in RETRYABLE):
                     raise
-                log.warning("commit attempt %d failed with HTTP %s; retrying", attempt + 1, status)
+                log.warning("commit attempt %d failed with %s; retrying", attempt + 1, f"HTTP {status}" if http else type(error).__name__)
                 time.sleep(60 * (attempt + 1))
         self.revision = oid
         self.clear()
