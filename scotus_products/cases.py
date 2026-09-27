@@ -1,6 +1,6 @@
 """Builds the case-centric `incrediblecrab/scotus-cases` dataset from the SCOTUS document datasets and the Court's public docket pages.
 
-The document datasets hold one row per file. This one holds one row per `(term, docket)`: the case's docket page as served with the fields parsed from it, the case's opinions and argument transcripts copied with their text from the document datasets, and links to its argument audio.
+The document datasets hold one row per file. This one holds one row per `(term, docket)`: the case's docket page as served with the fields parsed from it, the case's opinions and argument transcripts copied with their text from the document datasets, and links to its argument audio. Where the opinion listings link one file of the United States Reports at the page each opinion starts on, a bound volume or a preliminary print, each case gets the pages of its own opinion, found from those pages and the running heads (see shared_doc).
 
 A run assembles a term again when one of its source partitions changed, when BUILDER changed, or when one of its docket pages is due: a page of the current or previous term once CURRENT_RECHECK has passed, a found page of an older term after RECHECK["found"], and a page that was not found after RECHECK["missing"], or at once if the builder now knows an address for it that was not asked. A docket that is not due, or that the run had no time or permission to reach, keeps the page the last run stored, so the next run carries on where this one stopped. Parsed fields are always taken from the stored page by this builder, so a parser change reaches every row without asking the Court again.
 """
@@ -24,15 +24,16 @@ from huggingface_hub.errors import EntryNotFoundError, RemoteEntryNotFoundError
 from .cli import step_outputs, trusted_publishing
 from .http import Blocked, Fetcher, QuotaExhausted, Unavailable
 from .markup import field, parse, render, resolve, squash
-from .sources import BASE, COLLECTIONS, long_date, repo_id
+from .sources import BASE, COLLECTIONS, iso_date, long_date, repo_id
 from .store import MANIFEST, HubStore, LocalStore, sha256_file
 
 REPO_ID = repo_id("cases")
 # Bumped when row assembly changes, so every term is assembled again; its docket pages are carried over, not fetched again.
-BUILDER = 2
+BUILDER = 3
 CURRENT_RECHECK = timedelta(hours=6)
 RECHECK = {"found": timedelta(days=7), "missing": timedelta(days=30)}
-SOURCE_COLLECTIONS = ("opinions-of-the-court", "opinions-relating-to-orders", "in-chambers-opinions", "argument-transcripts", "granted-noted-cases-list")
+OPINION_COLLECTIONS = ("opinions-of-the-court", "opinions-relating-to-orders", "in-chambers-opinions")
+SOURCE_COLLECTIONS = OPINION_COLLECTIONS + ("argument-transcripts", "granted-noted-cases-list")
 SOURCE_COLUMNS = ["id", "partition", "url", "term", "date", "docket", "title", "entries", "text_source", "text", "ocr_text"]
 SCHEMA = pa.schema([
     ("term", pa.int32()),
@@ -68,6 +69,10 @@ ORIGINAL = re.compile(r"(?i)(?<![0-9A-Za-z])(\d{1,3})\s*[,_-]?\s*orig(?:inal|\.)
 PROCEEDING_DATE = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{2}) (\d{4})$")
 MONTHS = {name: i for i, name in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
 NOT_FOUND = b"404 - Page Not Found"
+# Pages of the United States Reports that begin a part no opinion runs into: a Reporter's Note, the orders, the Court's allotment and rules orders, and the index.
+SECTION_BREAK = re.compile(r"Reporter[’']s Note|ORDERS FOR |SUPREME COURT OF THE UNITED STATES$|I N D E X|(?:[ivxlc]+ )?INDEX(?: [ivxlc]+)?$")
+WATERMARK = "Page Proof Pending Publication"
+ORDERS_DATELINE = re.compile(r"(?:\d+ U\. S\. )?(?:January|February|March|April|May|June|July|August|September|October|November|December) \d")
 # What the manifest keeps of each docket page; the bytes are in the row.
 PAGE_KEYS = ("url", "format", "found", "status", "fetched_at", "etag", "last_modified", "html_sha256", "tried")
 
@@ -344,22 +349,66 @@ def parse_docket_page(data, url, status_code=200):
 
 
 def source_doc(row, collection):
-    return {key: row.get(key) for key in ("id", "url", "date", "title", "text_source", "text", "ocr_text") if key in row} | {"collection": collection}
+    doc = {key: row.get(key) for key in ("id", "url", "date", "title", "text_source", "text", "ocr_text") if key in row} | {"collection": collection}
+    if collection in OPINION_COLLECTIONS:
+        doc |= {"citation": next((cell for cell in (listing_cell(entry, "Citation") for entry in loads(row.get("entries"), [])) if cell), None), "pages": None}
+    return doc
 
 
-def add_source(cases, term, docket, row, collection):
+def listing_cell(entry, name):
+    return squash(str((entry.get("row") or {}).get(name) or "")) or None
+
+
+def entry_dockets(entry):
+    """The dockets an opinion listing's row names in its Docket cell; the transcript listings have no such cell."""
+    cell = listing_cell(entry, "Docket")
+    return row_dockets({"docket": cell}) if cell else []
+
+
+def split_pages(text):
+    """The pages of a text that pdftotext -raw printed, which ends every page with a form feed."""
+    pages = text.split("\f")
+    if pages[-1] == "":
+        pages.pop()
+    return pages
+
+
+def ends_opinion(page):
+    """Whether a page of the United States Reports is no part of the opinion before it: one that begins another part, or a page of orders, whose running head gives dates (October 5, 2020 592 U. S.) where an opinion's gives its part (Kavanaugh, J., concurring). A preliminary print can carry a watermark line above the running head."""
+    lines = [line.strip() for line in page.strip().split("\n")[:4] if line.strip() != WATERMARK]
+    return bool(lines and (SECTION_BREAK.match(lines[0]) or (len(lines) > 1 and ORDERS_DATELINE.match(lines[1]))))
+
+
+def shared_doc(row, collection, entry, starts):
+    """One opinion in a file that holds several, such as a preliminary print of the United States Reports: its pages run from the page its listing entry links, #page=N, to the page before the next page any listing links in the file, or to the file's end."""
+    first = entry.get("page")
+    later = [page for page in starts if first and page > first]
+    doc = {"id": row.get("id"), "url": row.get("url"), "date": iso_date(listing_cell(entry, "Date")) or row.get("date"), "title": listing_cell(entry, "Name") or squash(entry.get("link_text") or "") or row.get("title"), "text_source": row.get("text_source"), "text": None, "ocr_text": None, "collection": collection, "citation": listing_cell(entry, "Citation"), "pages": None}
+    for name in ("text", "ocr_text"):
+        if not row.get(name) or not first:
+            continue
+        pages = split_pages(row[name])
+        last = min(min(later) - 1 if later else len(pages), len(pages))
+        last = next((number - 1 for number in range(first + 1, last + 1) if ends_opinion(pages[number - 1])), last)
+        if first <= last:
+            doc[name] = "".join(page + "\f" for page in pages[first - 1:last])
+            doc["pages"] = [first, last]
+    return doc
+
+
+def add_source(cases, term, docket, row, collection, doc=None):
     key = (term, normalize_docket(docket))
     case = cases.setdefault(key, {"term": term, "docket": key[1], "source_rows": [], "opinions": [], "transcripts": [], "titles": Counter(), "listed_titles": Counter(), "sources": set()})
     case["sources"].add(collection)
-    title = row.get("title")
+    title = doc["title"] if doc else row.get("title")
     if title:
         # The granted/noted lists' titles are in capitals, and a consolidated case's comes out of the list's layout garbled, so they are used last.
         case["listed_titles" if collection == "granted-noted-cases-list" else "titles"][title] += 1
-    case["source_rows"].append({"collection": collection, "id": row.get("id"), "date": row.get("date"), "title": title})
+    case["source_rows"].append({"collection": collection, "id": row.get("id"), "date": doc["date"] if doc else row.get("date"), "title": title})
     if collection == "argument-transcripts":
         case["transcripts"].append(source_doc(row, collection))
     elif collection != "granted-noted-cases-list":
-        case["opinions"].append(source_doc(row, collection))
+        case["opinions"].append(doc or source_doc(row, collection))
 
 
 def add_granted_list(cases, term, row):
@@ -381,19 +430,36 @@ def build_cases_from_sources(args, manifests, granted, term):
     for row in granted:
         if row.get("term") == term:
             add_granted_list(cases, term, row)
+    loaded = []
     for collection in SOURCE_COLLECTIONS:
         if collection == "granted-noted-cases-list":
             continue
         entry = manifests[collection].get("partitions", {}).get(f"OT{term}")
-        if not entry:
+        if entry:
+            loaded += [(collection, row) for row in source_rows(args, collection, entry)]
+    # The pages the listings link in each file, from every collection: a preliminary print is linked from Opinions of the Court and Opinions Relating to Orders alike.
+    starts = {}
+    for collection, row in loaded:
+        for item in loads(row.get("entries"), []):
+            if collection in OPINION_COLLECTIONS and item.get("page") and entry_dockets(item):
+                starts.setdefault(row.get("id"), set()).add(item["page"])
+    for collection, row in loaded:
+        items = [(item, entry_dockets(item)) for item in loads(row.get("entries"), [])] if collection in OPINION_COLLECTIONS else []
+        # A file whose entries name different cases holds one opinion per entry, and the row's own docket field names only the first.
+        if len({tuple(dockets) for _, dockets in items if dockets}) > 1:
+            added = set()
+            for item, dockets in items:
+                for docket in dockets:
+                    if (docket, item.get("page")) not in added:
+                        added.add((docket, item.get("page")))
+                        add_source(cases, term, docket, row, collection, shared_doc(row, collection, item, starts.get(row.get("id"), set())))
             continue
-        for row in source_rows(args, collection, entry):
-            dockets = row_dockets(row)
-            if not dockets:
-                for entry_data in loads(row.get("entries"), []):
-                    dockets.extend(docket for docket in docket_candidates(dumps(entry_data)) if docket not in dockets)
-            for docket in dockets:
-                add_source(cases, term, docket, row, collection)
+        dockets = row_dockets(row)
+        if not dockets:
+            for entry_data in loads(row.get("entries"), []):
+                dockets.extend(docket for docket in docket_candidates(dumps(entry_data)) if docket not in dockets)
+        for docket in dockets:
+            add_source(cases, term, docket, row, collection)
     return cases
 
 
@@ -607,11 +673,11 @@ def render_card(manifest):
         lines.append(f"| {key} | {entry.get('rows', 0):,} | {entry.get('docket_found', 0):,} | {entry.get('opinions', 0):,} | {entry.get('transcripts', 0):,} | {entry.get('audio', 0):,} |")
     lines += [f"| **Total** | **{total['cases']:,}** | **{total['docket_found']:,}** | **{total['opinions']:,}** | **{total['transcripts']:,}** | **{total['audio']:,}** |", "", "## Schema", "", "| Column | Type | Description |", "|---|---|---|"]
     docs = {
-        "term": "October Term.", "docket": "Supreme Court docket number, written one way whichever form a source uses: `24-1260`, the application `25A1`, or the original case `141, Orig.`, which sources also write `141-Orig`, `141orig` or `22O141`.", "case_name": "Case name from the docket page, else the most common title the opinion and transcript rows give, else the granted/noted list's title, which is in capitals and, for a consolidated case, can carry the list's markup, such as `)2 CFX`.", "case_name_source": "`docket` or `source`.", "sources": "JSON list of the source collections that name the docket.", "docket_url": "Address of the docket page fetched, or of the last one tried when none was found.", "docket_format": "`new` for `/docket/docketfiles/html/public/…html`, `old` for `/docketfiles/…htm`.", "docket_found": "Whether the Court has a docket page online for the case; null until a run has asked.", "docket_fetched_at": "UTC time the docket page was last fetched, or checked and found unchanged.", "docket_etag": "ETag the docket page was served with.", "docket_last_modified": "Last-Modified the docket page was served with.", "docket_html": "Docket page bytes as served; for a docket with no page, the Court's not-found page.", "docket_text": "Rendered text of the docket page.", "docketed_date": "ISO date of `Docketed:`.", "linked_with": "The docket page's `Linked with` field.", "lower_court": "The docket page's `Lower Ct:` field.", "lower_court_case_numbers": "JSON list of the lower court's case numbers.", "lower_court_decision_date": "ISO date of the lower court's decision.", "questions_presented_url": "Link to the Questions Presented PDF, which the docket page of a granted case gives.", "proceedings": "JSON list of docket entries in page order: `date`, `text`, and `documents`, the title and link of each document filed with the entry.", "attorneys": "Rendered attorneys section of the docket page.", "opinions": "JSON list of the case's opinion rows from the source datasets, with `text` and `ocr_text`.", "transcripts": "JSON list of the case's argument transcript rows from the source dataset, with `text` and `ocr_text`.", "audio": "JSON list of the case's argument audio: the page, the MP3 link and the argument date. The MP3 files are linked, not stored.", "source_rows": "JSON list of the source rows that name the docket."
+        "term": "October Term.", "docket": "Supreme Court docket number, written one way whichever form a source uses: `24-1260`, the application `25A1`, or the original case `141, Orig.`, which sources also write `141-Orig`, `141orig` or `22O141`.", "case_name": "Case name from the docket page, else the most common title the opinion and transcript rows give, else the granted/noted list's title, which is in capitals and, for a consolidated case, can carry the list's markup, such as `)2 CFX`.", "case_name_source": "`docket` or `source`.", "sources": "JSON list of the source collections that name the docket.", "docket_url": "Address of the docket page fetched, or of the last one tried when none was found.", "docket_format": "`new` for `/docket/docketfiles/html/public/…html`, `old` for `/docketfiles/…htm`.", "docket_found": "Whether the Court has a docket page online for the case; null until a run has asked.", "docket_fetched_at": "UTC time the docket page was last fetched, or checked and found unchanged.", "docket_etag": "ETag the docket page was served with.", "docket_last_modified": "Last-Modified the docket page was served with.", "docket_html": "Docket page bytes as served; for a docket with no page, the Court's not-found page.", "docket_text": "Rendered text of the docket page.", "docketed_date": "ISO date of `Docketed:`.", "linked_with": "The docket page's `Linked with` field.", "lower_court": "The docket page's `Lower Ct:` field.", "lower_court_case_numbers": "JSON list of the lower court's case numbers.", "lower_court_decision_date": "ISO date of the lower court's decision.", "questions_presented_url": "Link to the Questions Presented PDF, which the docket page of a granted case gives.", "proceedings": "JSON list of docket entries in page order: `date`, `text`, and `documents`, the title and link of each document filed with the entry.", "attorneys": "Rendered attorneys section of the docket page.", "opinions": "JSON list of the case's opinions from the source datasets: `id`, `url`, `date`, `title`, `citation` (the United States Reports citation the listing gives), `collection`, `text_source`, `text` and `ocr_text`, and `pages`, null for a file that holds one opinion; for a file of the United States Reports that holds many, `pages` is the first and last page of the case's opinion and the text is those pages.", "transcripts": "JSON list of the case's argument transcript rows from the source dataset, with `text` and `ocr_text`.", "audio": "JSON list of the case's argument audio: the page, the MP3 link and the argument date. The MP3 files are linked, not stored.", "source_rows": "JSON list of the source rows that name the docket."
     }
     for column in SCHEMA:
         lines.append(f"| `{column.name}` | {column.type} | {docs[column.name]} |")
-    lines += ["", "## Updates and limits", "", f"A GitHub Actions workflow runs the builder at 00:00 and 12:00 UTC, before it syncs the source datasets, so a row reflects its sources as of the previous run; GitHub starts scheduled runs late when it is busy. A run assembles a term again when one of its source partitions changed, and asks for a docket page again when it is due: after {CURRENT_RECHECK.seconds // 3600} hours for the current and previous terms, after {RECHECK['found'].days} days for a page found in an older term, and after {RECHECK['missing'].days} days for a docket with no page. It asks conditionally where it can, so an unchanged page keeps its stored bytes. A docket that a run does not reach keeps what the last run stored.", "", "Per-case opinion files are on the Court's site only for Opinions of the Court from OT2017, Opinions Relating to Orders from OT2011, and in-chambers opinions; earlier opinions are only in the bound volumes of the United States Reports (collection `us-reports` of `scotus-opinions`), which this dataset does not split by case. The Court's online dockets begin during OT1999, where some cases have a page and others do not (No. 99-478 has one, No. 99-5525 none); a case without a page has `docket_found` false. Documents linked from docket entries (petitions, briefs, the Questions Presented) and argument audio are linked, not stored.", "", "## License", "", "Supreme Court opinions, orders and dockets are works of the United States Government, which are not subject to copyright in the United States ([17 U.S.C. § 105](https://www.copyright.gov/title17/92chap1.html#105)). Argument transcripts are prepared for the Court by court reporting companies; this dataset makes no claim about their copyright status. This card does not give legal advice.", ""]
+    lines += ["", "## Updates and limits", "", f"A GitHub Actions workflow runs the builder at 00:00 and 12:00 UTC, before it syncs the source datasets, so a row reflects its sources as of the previous run; GitHub starts scheduled runs late when it is busy. A run assembles a term again when one of its source partitions changed, and asks for a docket page again when it is due: after {CURRENT_RECHECK.seconds // 3600} hours for the current and previous terms, after {RECHECK['found'].days} days for a page found in an older term, and after {RECHECK['missing'].days} days for a docket with no page. It asks conditionally where it can, so an unchanged page keeps its stored bytes. A docket that a run does not reach keeps what the last run stored.", "", "The opinion listings start at OT2017 for Opinions of the Court and OT2011 for Opinions Relating to Orders; earlier opinions are only in the bound volumes of the United States Reports (collection `us-reports` of `scotus-opinions`), which this dataset does not split by case. Once opinions are printed, a listing links the bound volume or preliminary print at the page each starts on instead of the slip opinion. A case's pages of such a file run from that page to the page before the next page any listing links in it, and stop early at a page of orders (whose running head gives dates), a Reporter's Note, the heading of the orders, the Court's allotment or rules orders, or the index; an opinion printed on the page of the order it concerns carries the orders printed around it on those pages. Some listed files answer 404 on the Court's site (in September 2026, the four OT2017 preliminary prints of volumes 584 and 585, and every file the OT2011 to OT2015 Opinions Relating to Orders list), so those opinions are missing here; they are in `us-reports`. The Court's online dockets begin during OT1999, where some cases have a page and others do not (No. 99-478 has one, No. 99-5525 none); a case without a page has `docket_found` false. Documents linked from docket entries (petitions, briefs, the Questions Presented) and argument audio are linked, not stored.", "", "## License", "", "Supreme Court opinions, orders and dockets are works of the United States Government, which are not subject to copyright in the United States ([17 U.S.C. § 105](https://www.copyright.gov/title17/92chap1.html#105)). Argument transcripts are prepared for the Court by court reporting companies; this dataset makes no claim about their copyright status. This card does not give legal advice.", ""]
     return "\n".join(lines)
 
 

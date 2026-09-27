@@ -230,18 +230,86 @@ def test_granted_list_titles_stop_at_field_labels_and_rank_last():
     assert rows["137, Orig."]["docket_found"] is None and rows["137, Orig."]["docket_url"] is None
 
 
+def write_sources(base, collection, partitions):
+    root = cases.source_root(base, collection)
+    manifest = {"collection": collection, "partitions": {}}
+    for key, rows in partitions.items():
+        path = root / "data" / f"{key}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_pylist([{name: row.get(name) for name in cases.SOURCE_COLUMNS} for row in rows], schema=SOURCE_SCHEMA), path)
+        manifest["partitions"][key] = {"file": f"data/{key}.parquet", "sha256": sha256_file(path), "rows": len(rows)}
+    root.mkdir(parents=True, exist_ok=True)
+    (root / MANIFEST).write_text(json.dumps(manifest))
+
+
+def test_a_file_of_several_opinions_gives_each_case_its_own_pages(tmp_path):
+    # A preliminary print of the United States Reports, linked from two listings at the page each opinion starts on. Its text is pdftotext's, a form feed after each page.
+    printed = [
+        "589\n1 of 2\nPRELIMINARY PRINT",
+        "OCTOBER TERM, 2019 132\nSyllabus\nRODRIGUEZ v. FDIC",
+        "OCTOBER TERM, 2019 136\nPer Curiam\nSTATE v. PERSON",
+        "OCTOBER TERM, 2019 139\nSyllabus\nMcKINNEY v. ARIZONA",
+        "Page Proof Pending Publication\n140 McKINNEY v. ARIZONA\nGinsburg, J., dissenting",
+        "Reporter’s Note\nThe next page is purposely numbered 901.",
+        "ORDERS FOR OCTOBER 7, 2019, THROUGH\nFEBRUARY 24, 2020",
+        "1038 OCTOBER TERM, 2019\nOctober 21, 2019 589 U. S.\nNo. 19–7. Order.",
+        "ORDERS 1039\n1038 Thomas, J., concurring\nI concur.",
+        "Page Proof Pending Publication\n1040 OCTOBER TERM, 2019\nOctober 21, 22, 2019 589 U. S.\nNo. 19–70. Denied.",
+        "ORDERS 1041\n589 U. S. November 4, 2019\nNo. 19–8. Order.",
+        "1042 OCTOBER TERM, 2019\nSotomayor, J., dissenting 589 U. S.\nI dissent.",
+        "I N D E X",
+    ]
+    text = "".join(page + "\f" for page in printed)
+    pp = {"id": "opinions/preliminaryprint/589us1pp_web.pdf", "partition": "OT2019", "url": "https://www.supremecourt.gov/opinions/preliminaryprint/589US1PP_Web.pdf", "term": 2019, "text_source": "born_digital", "text": text}
+
+    def entry(page, docket, name, date, citation):
+        return {"href": f"/opinions/preliminaryprint/589US1PP_Web.pdf#page={page}", "link_text": name, "page": page, "row": {"Docket": docket, "Name": name, "Date": date, "Citation": citation}}
+
+    # The row's own fields are those of the first entry only.
+    court = pp | {"date": "2020-02-25", "docket": "18-1269", "title": "Rodriguez v. FDIC", "entries": json.dumps([entry(2, "18-1269", "Rodriguez v. FDIC", "2/25/20", "589 U.S. 132"), entry(4, "18-1109", "McKinney v. Arizona", "2/26/20", "589 U.S. 139")])}
+    orders = pp | {"date": "2019-10-21", "docket": "19-7", "title": "A v. B", "entries": json.dumps([entry(8, "19-7", "A v. B", "10/21/19", "589 U.S. 1038"), entry(11, "19-8", "C v. D", "11/4/19", "589 U.S. 1041"), entry(11, "19-8", "C v. D", "11/4/19", "589 U.S. 1041"), entry(3, "19-9", "State v. Person", "10/7/19", "589 U.S. 136")])}
+    # A slip opinion for consolidated cases, listed twice, holds one opinion however many dockets its entries name.
+    slip = {"id": "opinions/19pdf/19-1_abcd.pdf", "partition": "OT2019", "url": "https://www.supremecourt.gov/opinions/19pdf/19-1_abcd.pdf", "term": 2019, "date": "2020-03-02", "docket": "19-1, 19-2", "title": "E v. F", "text_source": "born_digital", "text": "slip\fopinion\f", "entries": json.dumps([{"href": "/opinions/19pdf/19-1_abcd.pdf", "page": None, "row": {"Docket": "19-1, 19-2", "Name": "E v. F", "Date": "3/2/20", "Citation": "590 U.S. 1"}}] * 2)}
+    write_sources(tmp_path, "opinions-of-the-court", {"OT2019": [court, slip]})
+    write_sources(tmp_path, "opinions-relating-to-orders", {"OT2019": [orders]})
+    for collection in ("in-chambers-opinions", "argument-transcripts", "granted-noted-cases-list"):
+        write_sources(tmp_path, collection, {})
+    args = SimpleNamespace(sources_local=str(tmp_path))
+    built = cases.build_cases_from_sources(args, cases.source_manifests(args), [], 2019)
+    opinions = {docket: case["opinions"] for (_, docket), case in built.items()}
+    assert sorted(opinions) == ["18-1109", "18-1269", "19-1", "19-2", "19-7", "19-8", "19-9"]
+
+    def pages(first, last):
+        return "".join(page + "\f" for page in printed[first - 1:last])
+
+    # Each opinion runs to the page before the next one either listing links, and stops early at a page of another part or of orders, watermarked or not.
+    expected = {"18-1269": ([2, 2], "Rodriguez v. FDIC", "2020-02-25", "589 U.S. 132"), "19-9": ([3, 3], "State v. Person", "2019-10-07", "589 U.S. 136"), "18-1109": ([4, 5], "McKinney v. Arizona", "2020-02-26", "589 U.S. 139"), "19-7": ([8, 9], "A v. B", "2019-10-21", "589 U.S. 1038"), "19-8": ([11, 12], "C v. D", "2019-11-04", "589 U.S. 1041")}
+    for docket, (span, title, date, citation) in expected.items():
+        [doc] = opinions[docket]
+        assert (doc["pages"], doc["title"], doc["date"], doc["citation"]) == (span, title, date, citation), docket
+        assert doc["text"] == pages(*span) and doc["id"] == pp["id"] and doc["url"] == pp["url"]
+    assert opinions["19-9"][0]["collection"] == "opinions-relating-to-orders" and opinions["18-1109"][0]["collection"] == "opinions-of-the-court"
+    assert built[(2019, "18-1109")]["source_rows"] == [{"collection": "opinions-of-the-court", "id": pp["id"], "date": "2020-02-26", "title": "McKinney v. Arizona"}]
+    for docket in ("19-1", "19-2"):
+        [doc] = opinions[docket]
+        assert (doc["text"], doc["pages"], doc["citation"], doc["title"]) == ("slip\fopinion\f", None, "590 U.S. 1", "E v. F")
+
+
+def test_a_page_of_orders_or_of_another_part_ends_an_opinion():
+    assert cases.ends_opinion("ORDERS 1025\n591 U. S. July 2, 2020\ntext")
+    assert cases.ends_opinion("1026 OCTOBER TERM, 2019\nJuly 2, 6, 2020 591 U. S.\ntext")
+    assert cases.ends_opinion("1056\nNovember 12, 2019\nCertiorari Granted")
+    assert cases.ends_opinion("Page Proof Pending Publication\nORDERS 913\n586 U. S. January 7, 2019")
+    assert cases.ends_opinion("SUPREME COURT OF THE UNITED STATES\nApril 25, 2019\nOrdered:")
+    assert cases.ends_opinion("iv INDEX\nAbortion") and cases.ends_opinion("INDEX v\nZoning")
+    for page in ("Cite as: 591 U. S. 979 (2020) 981\nBreyer, J., dissenting", "982 BARR v. LEE\nBreyer, J., dissenting", "1030 OCTOBER TERM, 2019\nSotomayor, J., dissenting 591 U. S.", "ORDERS 1043\n1039 Kavanaugh, J., concurring", "Page Proof Pending Publication\n140 McKINNEY v. ARIZONA\nOpinion of the Court", "OCTOBER TERM, 2019 979\nPer Curiam"):
+        assert not cases.ends_opinion(page), page
+
+
 # Whole runs: OT2025 is the current term, OT2010 an older one.
 def source_layout(base):
     def write(collection, partitions):
-        root = cases.source_root(base, collection)
-        manifest = {"collection": collection, "partitions": {}}
-        for key, rows in partitions.items():
-            path = root / "data" / f"{key}.parquet"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            pq.write_table(pa.Table.from_pylist([{name: row.get(name) for name in cases.SOURCE_COLUMNS} for row in rows], schema=SOURCE_SCHEMA), path)
-            manifest["partitions"][key] = {"file": f"data/{key}.parquet", "sha256": sha256_file(path), "rows": len(rows)}
-        root.mkdir(parents=True, exist_ok=True)
-        (root / MANIFEST).write_text(json.dumps(manifest))
+        write_sources(base, collection, partitions)
 
     def transcript(term, docket, name, title):
         return {"id": f"oral_arguments/argument_transcripts/{term}/{name}", "partition": f"OT{term}", "url": f"https://www.supremecourt.gov/oral_arguments/argument_transcripts/{term}/{name}", "term": term, "date": f"{term}-11-01", "docket": docket, "title": title, "text_source": "born_digital", "text": f"transcript of {title}"}
