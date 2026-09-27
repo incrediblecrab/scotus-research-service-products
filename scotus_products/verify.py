@@ -136,6 +136,8 @@ def _check_row(row, workdir):
         if extract_html(data)["text"] != row["text"]:
             found.append(f"{row['id']}: rendering the stored page again gives other text")
         return found
+    if row["media_type"] == "audio/mpeg":
+        return found
     with tempfile.TemporaryDirectory(dir=workdir) as scratch:
         path = Path(scratch) / "document.pdf"
         path.write_bytes(data)

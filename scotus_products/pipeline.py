@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
-from .extract import extract_html, extract_pdf
+from .extract import extract_audio, extract_html, extract_pdf
 from .http import Blocked, QuotaExhausted
 from .sources import ListingError, current_term
 from .store import Superseded, dumps
@@ -257,8 +257,14 @@ def fetch(ctx, url):
     return response.content, {name: response.headers[name] for name in KEPT_HEADERS if name in response.headers}
 
 
-def extract(ctx, data):
-    return extract_html(data) if ctx.collection.html else extract_pdf(data, ctx.workdir)
+def extract(ctx, data, unit=None):
+    """By the entry's document_type, which the parsers of listings that mix PDFs, HTML pages and audio set; otherwise by the collection."""
+    kind = ((unit.entries[0] if unit and unit.entries else {}).get("document_type") or "").lower()
+    if kind == "audio":
+        return extract_audio(data)
+    if ctx.collection.html or kind == "html":
+        return extract_html(data)
+    return extract_pdf(data, ctx.workdir)
 
 
 def build_row(ctx, key, unit, data, headers, extracted, now):
@@ -278,7 +284,7 @@ def same_content(ctx, stored, row):
     """Whether a fetch returned what is stored: the same bytes, or for an HTML page (whose served bytes carry values that change per request) the same rendered text."""
     if stored is None:
         return False
-    if ctx.collection.html:
+    if row["media_type"] == "text/html":
         return stored.get("text") is not None and stored["text"] == row["text"]
     return stored["file_sha256"] == row["file_sha256"]
 
@@ -370,7 +376,7 @@ def sync_partition(ctx, pool, manifest, key, units):
             row["first_seen_at"] = previous["first_seen_at"]
             if same_content(ctx, previous, row):
                 # The stored bytes stay with the stamps and headers of the fetch that got them; a PDF's bytes are the same, so it takes the new validators.
-                kept = ("file", "file_sha256", "file_size", "fetched_at") + (("etag", "last_modified", "metadata") if ctx.collection.html else ())
+                kept = ("file", "file_sha256", "file_size", "fetched_at") + (("etag", "last_modified", "metadata") if row["media_type"] == "text/html" else ())
                 row.update({name: previous[name] for name in kept})
                 counts["unchanged"] += 1
             else:
@@ -410,7 +416,7 @@ def sync_partition(ctx, pool, manifest, key, units):
             except Exception as error:  # noqa: BLE001 - recorded per unit
                 fail(unit, error)
                 continue
-            queue.append((unit, data, headers, pool.submit(extract, ctx, data)))
+            queue.append((unit, data, headers, pool.submit(extract, ctx, data, unit)))
             queued_bytes += len(data)
             drain(2 * max(1, ctx.workers), PENDING_BYTES)
             if time.monotonic() - ctx.last_commit >= ctx.checkpoint_seconds:

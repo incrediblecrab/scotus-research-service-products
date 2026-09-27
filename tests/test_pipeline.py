@@ -234,3 +234,31 @@ def test_listing_error_from_the_listing_stops_the_run(tmp_path, two_files):
 def test_code_points_with_no_standard_meaning_are_counted_in_rows_and_characters():
     rows = [{"text": "Of\ue405ce and Net\ue406ix"}, {"text": "plane 15 \U000f0001 and 16 \U00100001, index \ufffd \ufffd"}, {"text": "fi as letters, \ufb01 as a ligature"}, {"text": None}, {"text": ""}, {}]
     assert codepoints(rows) == {"private_use_rows": 2, "private_use": 4, "replacement_rows": 1, "replacement": 2}
+
+
+def test_a_pdf_collection_takes_a_file_whose_address_has_no_pdf_suffix_for_a_pdf(tmp_path, born_digital):
+    volume = unit("opinions/boundvolumes/502bv")
+    record, _ = run(tmp_path, FakeListing([volume]), FakeSite({volume.url: born_digital}))
+    assert record["added"] == 1 and rows(tmp_path)[volume.id]["media_type"] == "application/pdf"
+
+
+def test_a_listing_that_mixes_pdfs_and_pages_extracts_each_by_its_document_type_and_compares_a_page_by_its_text(tmp_path, born_digital):
+    guide, rules = unit("filingandrules/guide.aspx", document_type="html"), unit("filingandrules/rules.pdf", document_type="pdf")
+    page = b'<html><body><input name="token" value="1"><div id="pagemaindiv"><p>Guide for Counsel</p></div></body></html>'
+    site = FakeSite({guide.url: page, rules.url: born_digital})
+    record, _ = run(tmp_path, FakeListing([guide, rules]), site)
+    stored = rows(tmp_path)
+    assert record["added"] == 2 and stored[guide.id]["media_type"] == "text/html" and stored[rules.id]["media_type"] == "application/pdf"
+    site.files[guide.url] = page.replace(b'value="1"', b'value="2"')
+    record, _ = run(tmp_path, FakeListing([guide, rules]), site, refetch=True)
+    assert record["unchanged"] == 2 and rows(tmp_path)[guide.id]["file"] == page
+
+
+def test_argument_audio_is_stored_as_served_with_no_text_and_a_response_that_is_not_audio_is_a_failure(tmp_path):
+    audio, broken = unit("media/audio/mp3files/25-466.mp3", document_type="audio"), unit("media/audio/mp3files/25-467.mp3", document_type="audio")
+    mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90\x64" + bytes(400)
+    site = FakeSite({audio.url: mp3, broken.url: b"<!DOCTYPE html><html><body>Error</body></html>"})
+    record, store = run(tmp_path, FakeListing([audio, broken]), site)
+    row = rows(tmp_path)[audio.id]
+    assert record["added"] == 1 and record["failed"] == 1 and broken.id in store.read_manifest()["failures"]
+    assert row["file"] == mp3 and row["media_type"] == "audio/mpeg" and row["text_source"] == "no_text" and row["text"] is None and row["pages"] is None

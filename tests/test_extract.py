@@ -5,7 +5,7 @@ import pytest
 
 from conftest import FIXTURES, page_bytes, pdf_bytes
 from scotus_products import extract
-from scotus_products.extract import NotAPdf, classify, compare, extract_html, extract_pdf
+from scotus_products.extract import NotAPdf, classify, compare, extract_audio, extract_html, extract_pdf
 
 
 def pdftotext_raw(name):
@@ -88,3 +88,14 @@ def test_html_document_text_is_the_rendered_content_without_scripts():
     assert row["text_source"] == "html" and row["media_type"] == "text/html"
     assert row["text"].startswith("Order List by Circuit for Friday, September 4, 2026\nCircuit\u00a0\u00a02\n24-1015\u00a0(22-2858)\t25-7003\u00a0(24-2574)\n")
     assert "function" not in row["text"] and "Caution" not in row["text"]
+
+
+@pytest.mark.parametrize("head", [b"ID3\x03\x00", b"\xff\xfb\x90\x64", b"\xff\xfa\x90\x64", b"\xff\xf3\x48\xc4", b"\xff\xe3\x18\xc4"], ids=["id3", "mpeg1", "mpeg1-crc", "mpeg2", "mpeg2.5"])
+def test_audio_is_recognized_by_an_id3_tag_or_an_mpeg_frame_sync(head):
+    assert extract_audio(head + bytes(64))["media_type"] == "audio/mpeg"
+
+
+@pytest.mark.parametrize("data", [b"<!DOCTYPE html><html>", b"%PDF-1.6", b"\xff\x10", b""], ids=["html", "pdf", "no-sync", "empty"])
+def test_a_response_that_is_not_audio_is_refused(data):
+    with pytest.raises(ValueError):
+        extract_audio(data)

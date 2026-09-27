@@ -1,6 +1,6 @@
-"""The eleven collections: where each is listed, how its listing pages are read, and how their entries become units.
+"""The collections: where each is listed, how its listing pages are read, and how their entries become units.
 
-A unit is one document file, a PDF or (for Orders by Circuit) an HTML page, and becomes one row. Several entries can link one file: Opinions Relating to Orders lists two opinions in one PDF as #page anchors, and for October Terms 2017 and 2018 the Opinions of the Court pages link pages of bound volumes and preliminary prints. So a unit carries every entry that links it, each entry with its page anchor, and the file is stored once, whole: nothing is cut out of a document.
+A unit is one document file, a PDF, an HTML page (Orders by Circuit, press releases, media advisories, and some Year-End Reports and filing pages) or an MP3 (argument audio), and becomes one row. Several entries can link one file: Opinions Relating to Orders lists two opinions in one PDF as #page anchors, and for October Terms 2017 and 2018 the Opinions of the Court pages link pages of bound volumes and preliminary prints. So a unit carries every entry that links it, each entry with its page anchor, and the file is stored once, whole: nothing is cut out of a document.
 
 Every entry records the listing's own text (markup.field: the rendered text with ASCII whitespace runs collapsed): the table cells under their headers, or the list item, with the headings it sits under. The typed columns (term, date, docket, title) are read from those strings; the strings themselves stay in the entries.
 """
@@ -10,6 +10,7 @@ import json
 import re
 from dataclasses import dataclass, field as dataclass_field
 from datetime import date
+from urllib.parse import urlsplit
 
 from .markup import field, line_of, main_content, parse, resolve, squash
 
@@ -84,7 +85,7 @@ def _heading_kinds(element):
 LEVELS = ("section", "group", "subgroup")
 
 
-def scan(main, page_url, headings=(), is_doc=None):
+def scan(main, page_url, headings=(), is_doc=None, skip=NOT_LISTED):
     """Every document link in the main column, in page order, with its listing context: the link's text and title, the table row or list item it sits in, the rendered line that holds it where that line is none of those, and the headings above it (any of section, group, subgroup)."""
     is_doc = is_doc or (lambda uid: uid.endswith(".pdf"))
     state, out = {}, []
@@ -102,7 +103,7 @@ def scan(main, page_url, headings=(), is_doc=None):
         if href.startswith(("#", "mailto:", "javascript:")):
             continue
         uid, url, page = resolve(page_url, href)
-        if not is_doc(uid) or uid.startswith(NOT_LISTED):
+        if not is_doc(uid) or any(uid.startswith(prefix) for prefix in skip):
             continue
         entry = {"listing": page_url, "href": href, "link_text": field(element)}
         if page is not None:
@@ -177,8 +178,10 @@ def group_units(found):
 # The columns of the site's footer, as it names and links them (read September 27, 2026), that the datasets follow.
 CATEGORIES = {
     "opinions": ("Opinions", f"{BASE}/opinions/opinions.aspx"),
+    "filing-and-rules": ("Filing & Rules", f"{BASE}/filingandrules/"),
     "oral-arguments": ("Oral Arguments", f"{BASE}/oral_arguments/oral_arguments.aspx"),
     "case-documents": ("Case Documents", f"{BASE}/case_documents.aspx"),
+    "news-media": ("News Media", f"{BASE}/publicinfo/publicinfo.aspx"),
 }
 
 
@@ -222,6 +225,41 @@ def term_pages(name, template):
         return [(template.format(yy=f"{term % 100:02d}", yyyy=term), term) for term in range(FIRST_TERM[name], current_term(today) + 2)]
 
     return pages
+
+
+def media_kind(uid):
+    path = urlsplit(uid).path.lower()
+    if path.endswith(".pdf"):
+        return "pdf"
+    if path.endswith(".mp3"):
+        return "audio"
+    return "html"
+
+
+def is_document(uid):
+    path = urlsplit(uid).path.lower()
+    return path.endswith((".pdf", ".aspx", ".html", ".htm")) or "." not in path.rsplit("/", 1)[-1]
+
+
+def parse_year(text):
+    match = re.search(r"(?<!\d)((?:18|19|20)\d{2})(?!\d)", text or "")
+    return int(match.group(1)) if match else None
+
+
+MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+_LONG_DATE = re.compile(rf"\b({'|'.join(MONTH_NAMES)}) (\d{{1,2}}), (\d{{4}})\b")
+
+
+def long_date(text):
+    """ISO date of the last date written out like May 8, 2025 in the text (a speech's title ends with its date); None if there is none."""
+    found = _LONG_DATE.findall(text or "")
+    if not found:
+        return None
+    month, day, year = found[-1]
+    try:
+        return date(int(year), MONTH_NAMES.index(month) + 1, int(day)).isoformat()
+    except ValueError:
+        return None
 
 
 def transcript_pages(today):
@@ -409,6 +447,120 @@ def typed_original(unit, today=None):
     return {"term": None, "date": iso_date(row.get("File Date"), today), "docket": match.group(1) if match else None, "title": row.get("Document Title") or entry.get("link_text") or None}
 
 
+def parse_news_html(main, page_url, term):
+    found = []
+    for uid, url, entry in scan(main, page_url, is_doc=lambda uid: "." not in uid.rsplit("/", 1)[-1], skip=()):
+        if entry.get("row") is None:
+            raise ListingError(f"{page_url}: a news link outside a table row: {entry['href']}")
+        entry["document_type"] = "html"
+        found.append((uid, url, entry, f"{parse_year(' '.join((entry.get('row') or {}).values())) or 'undated'}"))
+    return found
+
+
+def typed_news_html(unit, today=None):
+    entry = unit.entries[0]
+    row = entry.get("row") or {}
+    date_text = row.get("Date Posted") or row.get("Date") or ""
+    return {"term": None, "date": iso_date(date_text, today) or long_date(date_text), "docket": None, "title": entry.get("link_text") or row.get("Subject") or None}
+
+
+def parse_speeches(main, page_url, term):
+    found = []
+    for uid, url, entry in scan(main, page_url, is_doc=lambda uid: uid.lower().endswith(".pdf"), skip=()):
+        text = entry.get("link_text") or entry.get("line") or entry.get("item")
+        year = int(long_date(text)[:4]) if long_date(text) else parse_year(text)
+        entry["document_type"] = "pdf"
+        entry["year"] = year
+        found.append((uid, url, entry, f"{year or 'undated'}"))
+    return found
+
+
+def parse_year_end_reports(main, page_url, term):
+    found = []
+    for uid, url, entry in scan(main, page_url, is_doc=is_document, skip=()):
+        year = parse_year(entry.get("link_text"))
+        if not year:
+            raise ListingError(f"{page_url}: no year in {entry['link_text']!r}")
+        entry["document_type"] = media_kind(uid)
+        entry["year"] = year
+        found.append((uid, url, entry, f"{year}"))
+    return found
+
+
+def typed_year_document(unit, today=None):
+    """A speech's or Year-End Report's year is no October Term: it stays in the entry and the partition, and a speech's date is the one its title ends with."""
+    entry = unit.entries[0]
+    return {"term": None, "date": long_date(entry.get("link_text")), "docket": None, "title": entry.get("link_text") or None}
+
+
+def typed_single_document(unit, today=None):
+    entry = unit.entries[0]
+    title = "A Reporter's Guide to Applications" if unit.id == "publicinfo/reportersguide.pdf" else entry.get("link_text")
+    return {"term": None, "date": None, "docket": None, "title": title or None}
+
+
+def parse_reporters_guide(main, page_url, term):
+    url = f"{BASE}/publicinfo/reportersguide.pdf"
+    return [("publicinfo/reportersguide.pdf", url, {"listing": page_url, "href": "reportersguide.pdf", "link_text": "News Media", "document_type": "pdf"}, "all")]
+
+
+def parse_filing_documents(main, page_url, term):
+    found = []
+    listing_pages = {"ctrules/scannedrules.aspx"}
+    for uid, url, entry in scan(main, page_url, is_doc=is_document, skip=()):
+        if not url.startswith(BASE + "/"):
+            continue
+        if "/elearning/" in f"/{uid}":
+            continue
+        if uid in listing_pages:
+            continue
+        entry["document_type"] = media_kind(uid)
+        year = parse_year(entry.get("link_text") or uid)
+        entry["year"] = year
+        partition = f"{year}" if year else "current"
+        found.append((uid, url, entry, partition))
+    return found
+
+
+def typed_filing_document(unit, today=None):
+    """The year a filing document's link names (an edition of the Rules, a revision) is no October Term, and its dates are effective or revision dates rather than one date of the document, so term and date stay null."""
+    entry = unit.entries[0]
+    return {"term": None, "date": None, "docket": None, "title": entry.get("link_text") or None}
+
+
+def audio_pages(today):
+    return [(f"{BASE}/oral_arguments/argument_audio/{term}", term) for term in range(2010, current_term(today) + 2)]
+
+
+def parse_argument_audio(main, page_url, term):
+    found = []
+    for uid, url, entry in scan(main, page_url, headings=("group",), is_doc=lambda uid: "/oral_arguments/audio/" in f"/{uid}", skip=()):
+        docket = (entry.get("link_text") or entry["href"].rsplit("/", 1)[-1]).strip()
+        file_stem = entry["href"].rsplit("/", 1)[-1]
+        entry["term"] = term
+        entry["docket"] = docket
+        entry["document_type"] = "audio"
+        row = entry.get("row") or {}
+        date_text = row.get("Date") or row.get("Date Argued") or entry.get("group") or ""
+        date_value = iso_date(date_text)
+        partition = date_value[:7] if date_value else f"OT{term}"
+        audio_uid = f"media/audio/mp3files/{file_stem.lower()}.mp3"
+        audio_url = f"{BASE}/media/audio/mp3files/{file_stem}.mp3"
+        found.append((audio_uid, audio_url, entry, partition))
+    return found
+
+
+def typed_argument_audio(unit, today=None):
+    entry = unit.entries[0]
+    row = entry.get("row") or {}
+    date_text = row.get("Date") or row.get("Date Argued") or ""
+    docket = entry.get("docket")
+    title = row.get("Case Name") or row.get("Case") or row.get("Oral Argument") or entry.get("line") or entry.get("link_text")
+    if title and docket and title.startswith(docket):
+        title = title[len(docket):].strip()
+    return {"term": entry.get("term"), "date": iso_date(date_text, today), "docket": docket, "title": title or None}
+
+
 # Measured on the rows built September 26, 2026. Shared by the three collections whose files have the two code points.
 LIGATURES = "Where `text` has the Private Use Area code point U+E405 or U+E406, the page prints fi or fl: each of the 196 words that U+E405 occurs in, across Opinions of the Court, Opinions Relating to Orders and U. S. Reports, and each of the 36 that U+E406 occurs in reads as a word or a name with fi or fl in its place, so `text` spells Office `Of\\uE405ce` and Netflix `Net\\uE406ix` (counted September 26, 2026). A search of `text` for such a word misses those rows unless it allows for the two code points."
 # How pdftotext treats a hyphen that a file marks as no text; the collections' notes give their own counts.
@@ -514,6 +666,60 @@ COLLECTIONS = {c.name: c for c in (
             "A scanned file's only text is the OCR layer inside it, which is in ocr_text and is not verbatim; the text-source table above counts the files of each kind.",
         ),
         category="case-documents",
+    ),
+    Collection(
+        "press-releases", "Press Releases", f"{BASE}/publicinfo/press/pressreleases.aspx",
+        single(f"{BASE}/publicinfo/press/pressreleases.aspx"), parse_news_html, typed_news_html, partition_label="year", html=True,
+        notes=("The collection stores the press release HTML pages linked by the Press Releases listing. Press credentials and other services pages are not included because they are forms or logistics pages, not document listings.",),
+        category="news-media",
+    ),
+    Collection(
+        "media-advisories", "Media Advisories", f"{BASE}/publicinfo/media/mediaadvisories.aspx",
+        single(f"{BASE}/publicinfo/media/mediaadvisories.aspx"), parse_news_html, typed_news_html, partition_label="year", html=True,
+        notes=("The collection stores the media advisory HTML pages linked by the Media Advisories listing. Press Credentials and Courtroom Seating are not included: they are a credentials form and a visitor-service page, not documents.",),
+        category="news-media",
+    ),
+    Collection(
+        "speeches", "Speeches", f"{BASE}/publicinfo/speeches/speeches.aspx",
+        single(f"{BASE}/publicinfo/speeches/speeches.aspx"), parse_speeches, typed_year_document, partition_label="year",
+        notes=("The collection stores the speech PDFs linked by the Speeches listing. The year partition is read from the listing text when present.",),
+        category="news-media",
+    ),
+    Collection(
+        "chief-justice-year-end-reports", "Chief Justice's Year-End Reports on the Federal Judiciary", f"{BASE}/publicinfo/year-end/year-endreports.aspx",
+        single(f"{BASE}/publicinfo/year-end/year-endreports.aspx"), parse_year_end_reports, typed_year_document, partition_label="year",
+        notes=("The collection stores the Year-End Reports linked by the Court's listing. Newer reports are PDFs; older reports are HTML pages, and both are kept as served.",),
+        category="news-media",
+    ),
+    Collection(
+        "reporters-guide-to-applications", "A Reporter's Guide to Applications", f"{BASE}/publicinfo/publicinfo.aspx",
+        single(f"{BASE}/publicinfo/publicinfo.aspx"), parse_reporters_guide, typed_single_document,
+        notes=("The footer links A Reporter's Guide to Applications as a single PDF. Services for News Media is excluded because it is a service description page, and Press Credentials is excluded because it is a credentials process.",),
+        category="news-media",
+    ),
+    Collection(
+        "rules-and-guidance", "Rules and Guidance", f"{BASE}/filingandrules/rules_guidance.aspx",
+        single(f"{BASE}/filingandrules/rules_guidance.aspx", f"{BASE}/ctrules/scannedrules.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current",
+        notes=("The collection stores documents linked from Rules and Guidance, including the historical Rules PDFs linked by the Historical Rules page that Rules and Guidance names. External filing-system links, the case citation tool and service pages are not followed.",),
+        category="filing-and-rules",
+    ),
+    Collection(
+        "electronic-filing-documents", "Electronic Filing Documents", f"{BASE}/filingandrules/electronicfiling.aspx",
+        single(f"{BASE}/filingandrules/electronicfiling.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current",
+        notes=("The collection stores PDF and HTML documents linked by the Electronic Filing page. The external electronic filing system itself is excluded because it is a service outside www.supremecourt.gov, and interactive eLearning tutorials are excluded because they are training applications rather than document files.",),
+        category="filing-and-rules",
+    ),
+    Collection(
+        "supreme-court-bar-documents", "Supreme Court Bar Documents", f"{BASE}/filingandrules/supremecourtbar.aspx",
+        single(f"{BASE}/filingandrules/supremecourtbar.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current",
+        notes=("The collection stores the bar admissions form and admissions instructions linked by the Supreme Court Bar page. It does not submit or automate bar admission services.",),
+        category="filing-and-rules",
+    ),
+    Collection(
+        "argument-audio", "Argument Audio", f"{BASE}/oral_arguments/argument_audio/",
+        audio_pages, parse_argument_audio, typed_argument_audio, partition_label="argument month", mutable=True,
+        notes=("The collection stores one MP3 file per oral argument audio page, with the audio bytes in `file` and no extracted text (`text_source` is `no_text`). Argument audio pages begin with October Term 2010 on the Court's site.",),
+        category="oral-arguments",
     ),
 )}
 

@@ -182,7 +182,7 @@ def extract_pdf(data, workdir=None, xcheck=True):
 
 
 def extract_html(data):
-    """An Orders by Circuit page: its text is the rendered text of the content the Court wrote, without the site's scripts and form fields, which change per request."""
+    """An HTML document (an Orders by Circuit page, a press release, a media advisory): its text is the rendered text of the content the Court wrote, without the site's scripts and form fields, which change per request."""
     doc = parse(data)
     found = doc.xpath(CIRCUIT_CONTENT) or doc.xpath('//div[@id="pagemaindiv"]')
     if not found:
@@ -199,6 +199,28 @@ def extract_html(data):
         "text": text,
         "ocr_text": None,
         "extractor": HTML_RENDERER,
+        "xcheck_extractor": None,
+        "xcheck_equal": None,
+        "xcheck_equal_nfkd": None,
+        "xcheck_delta": None,
+        "pdf_info": None,
+        "notes": [],
+    }
+
+
+def extract_audio(data):
+    """An MP3 row stores the audio bytes verbatim and no text. The file must open with an ID3 tag or an MPEG audio frame sync (11 set bits)."""
+    if not (data.startswith(b"ID3") or (len(data) > 1 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0)):
+        raise ValueError(f"the response does not look like MP3 audio: {data[:12]!r}")
+    return {
+        "media_type": "audio/mpeg",
+        "pages": None,
+        "image_pages": None,
+        "ocr_pages": None,
+        "text_source": "no_text",
+        "text": None,
+        "ocr_text": None,
+        "extractor": "no text extracted",
         "xcheck_extractor": None,
         "xcheck_equal": None,
         "xcheck_equal_nfkd": None,

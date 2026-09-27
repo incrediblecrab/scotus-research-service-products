@@ -32,7 +32,7 @@ def test_every_collection_renders_a_card_the_hub_can_parse(name):
 @pytest.mark.parametrize("name", list(COLLECTIONS))
 def test_the_license_is_only_claimed_where_it_holds(name):
     meta, body = front_matter(render(new_manifest(COLLECTIONS[name])))
-    if name in ("argument-transcripts", "original-jurisdiction-records-and-briefs"):
+    if name in ("argument-transcripts", "argument-audio", "speeches", "original-jurisdiction-records-and-briefs"):
         assert meta["license"] == "unknown" and "license_name" not in meta
         assert LICENSE[name] in body and "makes no claim" in LICENSE[name]
     else:

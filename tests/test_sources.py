@@ -26,6 +26,16 @@ PAGES = [
     ("journal", "orders_journal_aspx", "orders/journal.aspx", None, 33, 33, 4),
     ("journal", "orders_scannedjournals_aspx", "orders/scannedjournals.aspx", None, 104, 104, 12),
     ("original-jurisdiction-records-and-briefs", "casedocuments_original_jurisdiction_cases_aspx", "casedocuments/original_jurisdiction_cases.aspx", None, 3081, 2660, 146),
+    ("press-releases", "publicinfo_press_pressreleases_aspx", "publicinfo/press/pressreleases.aspx", None, 210, 210, 25),
+    ("media-advisories", "publicinfo_media_mediaadvisories_aspx", "publicinfo/media/mediaadvisories.aspx", None, 117, 117, 22),
+    ("speeches", "publicinfo_speeches_speeches_aspx", "publicinfo/speeches/speeches.aspx", None, 48, 48, 12),
+    ("chief-justice-year-end-reports", "publicinfo_year_end_year_endreports_aspx", "publicinfo/year-end/year-endreports.aspx", None, 26, 26, 26),
+    ("reporters-guide-to-applications", "publicinfo_publicinfo_aspx", "publicinfo/publicinfo.aspx", None, 1, 1, 1),
+    ("rules-and-guidance", "filingandrules_rules_guidance_aspx", "filingandrules/rules_guidance.aspx", None, 15, 15, 2),
+    ("rules-and-guidance", "ctrules_scannedrules_aspx", "ctrules/scannedrules.aspx", None, 55, 55, 52),
+    ("electronic-filing-documents", "filingandrules_electronicfiling_aspx", "filingandrules/electronicfiling.aspx", None, 6, 6, 1),
+    ("supreme-court-bar-documents", "filingandrules_supremecourtbar_aspx", "filingandrules/supremecourtbar.aspx", None, 3, 3, 1),
+    ("argument-audio", "oral_arguments_argument_audio_2025", "oral_arguments/argument_audio/2025", 2025, 58, 58, 7),
 ]
 IDS = [f"{name}:{fixture}" for name, fixture, *_ in PAGES]
 
@@ -45,7 +55,7 @@ def test_counts(name, fixture, path, term, entries, files, partitions):
 def strings(entry):
     """Every string in an entry that the page renders: link text, row cells and headers, list item, line, headings."""
     for key, value in entry.items():
-        if key in ("listing", "href", "link_title"):
+        if key in ("listing", "href", "link_title", "document_type", "docket"):
             continue
         if isinstance(value, str):
             yield key, value
@@ -95,6 +105,44 @@ def test_archived_transcript_row():
     assert unit.entries[0]["row"] == {"Oral Argument": "32 Johnson v. Bennett", "Date Argued": "11/13/1968"}
     assert unit.entries[0]["group"] == "Argument Month: November 1968"
     assert COLLECTIONS["argument-transcripts"].typed(unit, TODAY) == {"term": 1968, "date": "1968-11-13", "docket": "32", "title": "Johnson v. Bennett"}
+
+
+def test_argument_audio_preserves_mp3_url_case():
+    _, found = parsed("argument-audio", "oral_arguments_argument_audio_2025", "oral_arguments/argument_audio/2025", 2025)
+    units = group_units(found)
+    unit = units["media/audio/mp3files/25a312.mp3"]
+    assert unit.url == "https://www.supremecourt.gov/media/audio/mp3files/25A312.mp3"
+    assert unit.partition == "2026-01"
+    assert COLLECTIONS["argument-audio"].typed(unit, TODAY)["docket"] == "25A312"
+
+
+def test_year_end_reports_keep_pdf_and_html_document_types():
+    _, found = parsed("chief-justice-year-end-reports", "publicinfo_year_end_year_endreports_aspx", "publicinfo/year-end/year-endreports.aspx", None)
+    units = group_units(found)
+    assert units["publicinfo/year-end/2025year-endreport.pdf"].entries[0]["document_type"] == "pdf"
+    assert units["publicinfo/year-end/2000year-endreport.aspx"].entries[0]["document_type"] == "html"
+
+
+def test_electronic_filing_excludes_external_services_and_tutorial_apps():
+    _, found = parsed("electronic-filing-documents", "filingandrules_electronicfiling_aspx", "filingandrules/electronicfiling.aspx", None)
+    units = group_units(found)
+    assert "" not in units
+    assert not any("/elearning/" in uid for uid in units)
+    assert len(units) == 6
+
+
+def test_news_and_filing_documents_have_no_term_and_take_the_dates_the_listing_writes_out():
+    _, found = parsed("speeches", "publicinfo_speeches_speeches_aspx", "publicinfo/speeches/speeches.aspx", None)
+    speech = group_units(found)["publicinfo/speeches/remarks for the harry s. truman good neighbor award_as delivered.pdf"]
+    assert speech.partition == "2025"
+    assert COLLECTIONS["speeches"].typed(speech, TODAY) == {"term": None, "date": "2025-05-08", "docket": None, "title": "Remarks for the Harry S. Truman Good Neighbor Award, Kansas City, MO, May 8, 2025"}
+    _, found = parsed("press-releases", "publicinfo_press_pressreleases_aspx", "publicinfo/press/pressreleases.aspx", None)
+    press = group_units(found)
+    assert COLLECTIONS["press-releases"].typed(press["publicinfo/press/pressreleases/pr_07-01-26"], TODAY)["date"] == "2026-07-01"
+    assert all(COLLECTIONS["press-releases"].typed(u, TODAY)["date"] for u in press.values())
+    for name, fixture, path in [("chief-justice-year-end-reports", "publicinfo_year_end_year_endreports_aspx", "publicinfo/year-end/year-endreports.aspx"), ("rules-and-guidance", "filingandrules_rules_guidance_aspx", "filingandrules/rules_guidance.aspx")]:
+        _, found = parsed(name, fixture, path, None)
+        assert {COLLECTIONS[name].typed(u, TODAY)["term"] for u in group_units(found).values()} == {None}
 
 
 def test_original_jurisdiction_document_listed_under_several_cases_is_one_file():
