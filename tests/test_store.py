@@ -65,6 +65,32 @@ def test_the_local_store_commits_what_was_staged_and_renders_the_card_with_the_m
     assert not store.dir.exists(), "close removes the scratch directory"
 
 
+def test_collections_share_a_repo_under_their_prefixes_and_the_root_card_renders_from_all_their_manifests(tmp_path):
+    def root_card(manifests):
+        return "root: " + ", ".join(f"{name}={manifest['n']}" for name, manifest in sorted(manifests.items())) + "\n"
+
+    for name, n in (("b", 1), ("a", 2), ("b", 3)):
+        store = LocalStore(tmp_path / "repo", workdir=tmp_path, card=lambda manifest: f"card for {manifest['n']}\n", prefix=f"{name}/", root_card=root_card)
+        try:
+            stats = store.stage_partition("OT2023", [{"id": f"{name}.pdf", "listed": True}])
+            store.stage_manifest({"collection": name, "n": n})
+            assert store.commit(f"{name} {n}") == "1"
+            assert stats["file"] == "data/OT2023.parquet", "the manifest names paths within the collection"
+            assert store.list_files() == ["README.md", "data/OT2023.parquet", "manifest.json"] and store.list_files("data/") == ["data/OT2023.parquet"]
+            assert store.read_manifest() == {"collection": name, "n": n} and store.read_text("README.md") == f"card for {n}\n"
+            assert [row["id"] for row in store.read_partition("OT2023")] == [f"{name}.pdf"] and list(store.file_sha256s(["data/OT2023.parquet"])) == ["data/OT2023.parquet"]
+        finally:
+            store.close()
+    assert (tmp_path / "repo" / "README.md").read_text() == "root: a=2, b=3\n"
+    assert sorted(str(p.relative_to(tmp_path / "repo")) for p in (tmp_path / "repo").rglob("*") if p.is_file()) == [
+        "README.md", "a/README.md", "a/data/OT2023.parquet", "a/manifest.json", "b/README.md", "b/data/OT2023.parquet", "b/manifest.json"]
+
+
+def test_a_root_card_needs_a_prefix(tmp_path):
+    with pytest.raises(ValueError, match="prefix"):
+        LocalStore(tmp_path / "repo", workdir=tmp_path, root_card=lambda manifests: "")
+
+
 def test_the_local_commit_copies_when_a_rename_cannot_cross_volumes(tmp_path, monkeypatch):
     store = LocalStore(tmp_path / "ds", workdir=tmp_path)
     real_replace = os.replace
@@ -207,3 +233,17 @@ def test_an_error_that_is_not_retryable_is_raised_at_once(hub):
 def test_git_blob_sha1_matches_git():
     assert git_blob_sha1(b"") == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
     assert git_blob_sha1(b"hello\n") == "ce013625030ba8dba906f756967f9e9ca394464a"
+
+
+def test_a_hub_store_commits_under_its_prefix_and_adopts_its_own_landed_commit_there(tmp_path, monkeypatch):
+    monkeypatch.setattr(store_module.time, "sleep", lambda seconds: None)
+    api = FakeApi()
+    store = HubStore("x/y", workdir=tmp_path, api=api, card=lambda manifest: "card\n", prefix="c/")
+    try:
+        store.stage_partition("OT2023", [{"id": "a.pdf"}])
+        store.stage_manifest({"collection": "c"})
+        api.lose_next_response = True
+        assert store.commit("first") == "c1" and api.commits == ["first"]
+        assert sorted(api.files) == ["c/README.md", "c/data/OT2023.parquet", "c/manifest.json"]
+    finally:
+        store.close()

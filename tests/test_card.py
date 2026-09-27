@@ -7,9 +7,9 @@ import pytest
 import yaml
 
 from conftest import FakeListing, FakeSite, collection, unit
-from scotus_products.card import COLUMN_DOCS, FAILURES_SHOWN, LICENSE, count, gigabytes, render
+from scotus_products.card import COLUMN_DOCS, FAILURES_SHOWN, LICENSE, count, gigabytes, render, render_category
 from scotus_products.pipeline import Context, new_manifest, sync
-from scotus_products.sources import COLLECTIONS
+from scotus_products.sources import CATEGORIES, COLLECTIONS
 from scotus_products.store import SCHEMA, LocalStore
 
 
@@ -65,7 +65,8 @@ def test_a_built_datasets_card_is_the_one_its_manifest_renders(built):
     card, manifest = built.read_text("README.md"), built.read_manifest()
     assert card == render(manifest)
     meta, body = front_matter(card)
-    assert meta["configs"] == [{"config_name": "default", "data_files": [{"split": "train", "path": "data/*.parquet"}]}]
+    name = "original-jurisdiction-records-and-briefs"
+    assert meta["configs"] == [{"config_name": name, "data_files": [{"split": "train", "path": f"{name}/data/*.parquet"}]}]
     assert f"**2 files** ({gigabytes(manifest['partitions']['OT2023']['file_bytes'] + manifest['partitions']['OT2024']['file_bytes'])}, 2 PDF pages); the listing of {manifest['seen']['at']} linked 3 files from 3 entries." in body
     assert "| born_digital | 1 |" in body and "| scanned | 1 |" in body
     assert "Cross-check of `text` against pypdf: 1 file compared;" in body
@@ -79,7 +80,7 @@ def test_the_card_does_not_depend_on_the_order_of_the_manifests_keys(built):
 
 def test_the_card_names_every_gap(built):
     body = render(built.read_manifest())
-    assert "This dataset does not hold every file the listing links: the status below says what it holds and where the gaps are." in body and "Every document file" not in body
+    assert "This collection does not hold every file the listing links: the status below says what it holds and where the gaps are." in body and "Every document file" not in body
     assert "1 partition is not yet complete: OT2023." in body
     assert "| [pdfs/gone.pdf](https://www.supremecourt.gov/pdfs/gone.pdf) | 1 | FetchFailed: HTTP 404 for https://www.supremecourt.gov/pdfs/gone.pdf |" in body
     assert "0 files have failed 3 times." in body
@@ -122,7 +123,7 @@ def test_the_card_claims_every_file_only_when_no_gap_shows(whole):
         manifest = copy.deepcopy(whole)
         plant(manifest)
         body = render(manifest)
-        assert EVERY not in body and "This dataset does not hold every file the listing links" in body, gap
+        assert EVERY not in body and "This collection does not hold every file the listing links" in body, gap
 
 
 def test_the_card_names_the_partitions_a_stopped_run_never_reached(tmp_path, born_digital):
@@ -198,3 +199,28 @@ def test_the_card_says_where_text_is_not_what_the_page_prints(built):
     assert "A PDF can declare what a run of its glyphs says (ActualText), and pdftotext prints the declaration in place of the glyphs" in body
     assert "`text` is plain text and marks no type style, such as italics or underlining, and a letter set in small capitals is whatever character the file maps it to" in body
     assert "pypdf reads the same text layer, so agreeing does not show that `text` matches the page" in body
+
+
+@pytest.mark.parametrize("category", list(CATEGORIES))
+def test_a_category_card_has_a_config_only_for_collections_with_rows_and_a_line_for_every_collection(category, built):
+    members = [name for name, c in COLLECTIONS.items() if c.category == category]
+    stored = dict(built.read_manifest(), collection=members[-1])
+    manifests = {members[-1]: stored, **{name: new_manifest(COLLECTIONS[name]) for name in members[:-1]}}
+    meta, body = front_matter(render_category(category, manifests))
+    assert meta["pretty_name"] == f"Supreme Court of the United States: {CATEGORIES[category][0]}"
+    assert meta["configs"] == [{"config_name": members[-1], "data_files": [{"split": "train", "path": f"{members[-1]}/data/*.parquet"}]}]
+    for name in members:
+        assert body.count(f"| [`{name}`]({name}/README.md) |") == 1
+    assert body.count("no run has read the listing yet") == len(members) - 1
+    assert f"| 2 | {gigabytes(stored['partitions']['OT2023']['file_bytes'] + stored['partitions']['OT2024']['file_bytes'])} | 2 of 3 |" in body
+    assert f'load_dataset("{COLLECTIONS[members[-1]].repo_id}", "{members[-1]}", split="train")' in body
+    unknown = any(name in LICENSE for name in members)
+    assert meta["license"] == ("unknown" if unknown else "other")
+    others = [c for c in CATEGORIES if c != category]
+    assert all(f"(https://huggingface.co/datasets/incrediblecrab/scotus-{c})" in body for c in others) and f"datasets/incrediblecrab/scotus-{category})" not in body
+
+
+def test_a_category_card_before_any_run_has_no_configs():
+    manifests = {name: new_manifest(c) for name, c in COLLECTIONS.items() if c.category == "opinions"}
+    meta, body = front_matter(render_category("opinions", manifests))
+    assert "configs" not in meta and body.count("no run has read the listing yet") == 4

@@ -44,11 +44,14 @@ def test_run_then_verify_then_a_hand_edited_card_fails_until_rewritten(tmp_path,
     assert main("verify", *local, "--deep") == 0
     report = json.loads(capsys.readouterr().out)
     assert report["problems"] == [] and report["deep"]["rows_checked"] == 1
-    card = tmp_path / NAME / "README.md"
-    card.write_text(card.read_text().replace("byte for byte", "byte-for-byte"))
-    assert main("verify", *local) == 1
-    assert json.loads(capsys.readouterr().out)["problems"] == ["README.md is not the card the manifest renders"]
-    assert main("card", *local, "--write") == 0 and main("verify", *local) == 0
+    repo = tmp_path / "scotus-opinions"
+    assert sorted(str(p.relative_to(repo)) for p in repo.rglob("*") if p.is_file()) == ["README.md", f"{NAME}/README.md", f"{NAME}/data/OT2023.parquet", f"{NAME}/manifest.json"]
+    for card, problem in ((repo / NAME / "README.md", f"{NAME}/README.md is not the card the manifest renders"), (repo / "README.md", "README.md is not the category card the collections' manifests render")):
+        card.write_text(card.read_text().replace("byte for byte", "byte-for-byte"))
+        assert main("verify", *local) == 1
+        assert json.loads(capsys.readouterr().out)["problems"] == [problem]
+        assert main("card", *local, "--write") == 0 and main("verify", *local) == 0
+        capsys.readouterr()
 
 
 def test_a_run_stopped_by_low_disk_exits_1_and_says_why(tmp_path, site, capsys):
@@ -66,12 +69,12 @@ def test_summarize_counts_a_summary_written_before_a_new_count_and_leaves_a_curr
     local = ["--dataset", NAME, "--local", str(tmp_path), "--workdir", str(tmp_path)]
     assert main("run", *local) == 0
     capsys.readouterr()
-    path = tmp_path / NAME / "manifest.json"
+    path = tmp_path / "scotus-opinions" / NAME / "manifest.json"
     manifest = json.loads(path.read_text())
     (key, entry), = manifest["partitions"].items()
     counted = entry.pop("codepoints")
     path.write_text(json.dumps(manifest))
-    assert main("card", *local, "--write") == 0 and "not yet counted in 1 partition" in (tmp_path / NAME / "README.md").read_text()
+    assert main("card", *local, "--write") == 0 and "not yet counted in 1 partition" in (tmp_path / "scotus-opinions" / NAME / "README.md").read_text()
     assert main("summarize", *local) == 0 and json.loads(capsys.readouterr().out)["changed"] == {key: ["codepoints"]}
     assert json.loads(path.read_text())["partitions"][key]["codepoints"] == counted
     assert main("summarize", *local) == 0 and json.loads(capsys.readouterr().out)["changed"] == {}
@@ -82,7 +85,8 @@ def test_card_write_on_the_hub_authenticates_and_a_card_to_print_does_not(monkey
     tokens, commits = [], []
 
     class Hub:
-        def __init__(self, repo_id, workdir=None, token=None, card=None):
+        def __init__(self, repo_id, workdir=None, token=None, card=None, prefix="", root_card=None):
+            assert repo_id == "incrediblecrab/scotus-opinions" and prefix == f"{NAME}/" and root_card is not None
             tokens.append(token)
 
         def read_manifest(self):

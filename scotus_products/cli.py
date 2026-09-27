@@ -8,7 +8,9 @@ import sys
 import time
 from pathlib import Path
 
-from .card import render
+from functools import partial
+
+from .card import render, render_category
 from .http import Fetcher
 from .pipeline import CLEAN_STOPS, SUMMARY_COLUMNS, Context, summarize, sync
 from .sources import COLLECTIONS, Listing
@@ -18,12 +20,13 @@ ALL = "all"
 
 
 def open_store(args, collection, write=False):
-    """--local DIR keeps each collection in DIR/{name}; otherwise the collection's Hub dataset. Hub reads are anonymous (token=False) unless the command writes."""
+    """--local DIR keeps each category's repo in DIR/scotus-{category}, with each collection in its own directory; otherwise the category's Hub dataset. Hub reads are anonymous (token=False) unless the command writes."""
     from .store import HubStore, LocalStore
 
+    cards = {"card": render, "prefix": collection.prefix, "root_card": partial(render_category, collection.category)}
     if args.local:
-        return LocalStore(Path(args.local) / collection.name, workdir=args.workdir, card=render)
-    return HubStore(collection.repo_id, workdir=args.workdir, token=None if write else False, card=render)
+        return LocalStore(Path(args.local) / collection.repo_id.split("/")[1], workdir=args.workdir, **cards)
+    return HubStore(collection.repo_id, workdir=args.workdir, token=None if write else False, **cards)
 
 
 def names(args):
@@ -115,7 +118,9 @@ def cmd_verify(args):
                 report = verify(store, listing=listing, deep=args.deep, redownload=args.redownload, fetcher=fetcher, workers=args.workers, workdir=args.workdir, seed=args.seed)
                 text = store.read_text(CARD)
                 if text is not None and text != render(store.read_manifest()):
-                    report["problems"].append("README.md is not the card the manifest renders")
+                    report["problems"].append(f"{collection.prefix}README.md is not the card the manifest renders")
+                if store.read_text(CARD, root=True) != render_category(collection.category, store.collection_manifests()):
+                    report["problems"].append("README.md is not the category card the collections' manifests render")
             finally:
                 store.close()
             report["collection"] = name
@@ -149,7 +154,7 @@ def main(argv=None):
     for command in ("run", "card", "verify", "list", "summarize"):
         p = sub.add_parser(command)
         p.add_argument("--dataset", required=True, choices=[*COLLECTIONS, ALL])
-        p.add_argument("--local", help="keep datasets in this directory (one subdirectory per collection) instead of on the Hub")
+        p.add_argument("--local", help="keep datasets in this directory (scotus-{category}/{collection}, as on the Hub) instead of on the Hub")
         p.add_argument("--workdir", help="scratch directory (default: the system's temporary directory)")
         p.add_argument("--workers", type=int, default=6, help="extraction threads")
         if command == "run":

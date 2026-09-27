@@ -1,9 +1,9 @@
-"""Renders a collection's dataset card (README.md on the Hub) from its manifest alone, so it is staged with every manifest commit and never disagrees with it."""
+"""Renders a collection's card ({collection}/README.md in its category's repo) from its manifest alone, and the category's card (the repo's README.md, the one the Hub shows) from the manifests of its collections, so both are staged with every manifest commit and never disagree with it."""
 
 from collections import Counter
 
 from .pipeline import MAX_ATTEMPTS, RETRY_AFTER_HOURS
-from .sources import COLLECTIONS
+from .sources import CATEGORIES, COLLECTIONS, repo_id as category_repo
 from .store import SCHEMA
 
 GITHUB = "https://github.com/incrediblecrab/scotus-research-service-products"
@@ -47,6 +47,22 @@ LICENSE = {
 }
 
 
+TAGS = ("tags:", "- legal", "- law", "- supreme-court", "- united-states", "- government", "- court-documents")
+
+
+def license_lines(unknown):
+    if unknown:
+        return ["license: unknown"]
+    return ["license: other", "license_name: us-government-works", "license_link: https://www.copyright.gov/title17/92chap1.html#105"]
+
+
+def config_lines(*names):
+    lines = ["configs:"]
+    for name in names:
+        lines += [f"- config_name: {name}", "  data_files:", "  - split: train", f"    path: {name}/data/*.parquet"]
+    return lines
+
+
 def size_category(rows):
     for limit, label in ((1_000, "n<1K"), (10_000, "1K<n<10K"), (100_000, "10K<n<100K"), (1_000_000, "100K<n<1M")):
         if rows < limit:
@@ -82,21 +98,33 @@ def codepoint_counts(points, uncounted):
     return f"{first}, and {second}."
 
 
-def render(manifest):
-    manifest = manifest or {}
-    collection = COLLECTIONS[manifest["collection"]]
+def status(manifest):
+    """What a collection's manifest says it holds and where its gaps are: the numbers both cards print."""
     entries = manifest.get("partitions") or {}
     failures = manifest.get("failures") or {}
     stored_ids = {uid for entry in entries.values() for uid in entry.get("ids") or ()}
-    missing = {uid: f for uid, f in failures.items() if uid not in stored_ids}
-    stale = sorted(uid for uid in failures if uid in stored_ids)
     listing = manifest.get("listing") or {}
     seen = manifest.get("seen") or listing
-    rows = sum(entry.get("rows") or 0 for entry in entries.values())
-    listed = sum(entry.get("listed") or 0 for entry in entries.values())
-    delisted = sum(entry.get("delisted") or 0 for entry in entries.values())
-    file_bytes = sum(entry.get("file_bytes") or 0 for entry in entries.values())
-    pages = sum(entry.get("pages") or 0 for entry in entries.values())
+    out = {
+        "entries": entries, "failures": failures, "listing": listing, "seen": seen,
+        "missing": {uid: f for uid, f in failures.items() if uid not in stored_ids},
+        "stale": sorted(uid for uid in failures if uid in stored_ids),
+        "incomplete": sorted(key for key, entry in entries.items() if not entry.get("complete")),
+        # Partitions the latest listing links files in that have no entry: the run that read it stopped (budget, disk) before it reached them.
+        "unreached": sorted(key for key, n in (seen.get("partitions") or {}).items() if n and key not in entries),
+    }
+    for name in ("rows", "listed", "delisted", "file_bytes", "pages"):
+        out[name] = sum(entry.get(name) or 0 for entry in entries.values())
+    out["whole"] = bool(listing.get("at")) and not out["incomplete"] and not out["unreached"] and not out["missing"] and out["listed"] == seen.get("count")
+    return out
+
+
+def render(manifest):
+    manifest = manifest or {}
+    collection = COLLECTIONS[manifest["collection"]]
+    held = status(manifest)
+    entries, failures, listing, seen, missing, stale = (held[key] for key in ("entries", "failures", "listing", "seen", "missing", "stale"))
+    rows, listed, delisted, file_bytes, pages = (held[key] for key in ("rows", "listed", "delisted", "file_bytes", "pages"))
     sources = Counter()
     xcheck = Counter()
     points = Counter()
@@ -113,29 +141,24 @@ def render(manifest):
         max_delta = max(max_delta, (entry.get("xcheck") or {}).get("max_delta") or 0)
     unstored = {uid: f for uid, f in missing.items() if f["attempts"] >= MAX_ATTEMPTS}
     repo_id = collection.repo_id
-    if collection.name in LICENSE:
-        license_lines = ["license: unknown"]
-    else:
-        license_lines = ["license: other", "license_name: us-government-works", "license_link: https://www.copyright.gov/title17/92chap1.html#105"]
-    lines = ["---", f"pretty_name: \"Supreme Court of the United States: {collection.title}\"", *license_lines, "language:", "- en",
-             "tags:", "- legal", "- law", "- supreme-court", "- united-states", "- government", "- court-documents",
-             "size_categories:", f"- {size_category(rows)}"]
+    lines = ["---", f"pretty_name: \"Supreme Court of the United States: {collection.title}\"", *license_lines(collection.name in LICENSE), "language:", "- en",
+             *TAGS, "size_categories:", f"- {size_category(rows)}"]
     if entries:
-        lines += ["configs:", "- config_name: default", "  data_files:", "  - split: train", "    path: data/*.parquet"]
+        lines += config_lines(collection.name)
     lines += ["---", "", f"# Supreme Court of the United States: {collection.title}", ""]
-    incomplete = sorted(key for key, entry in entries.items() if not entry.get("complete"))
-    # Partitions the latest listing links files in that have no entry: the run that read it stopped (budget, disk) before it reached them.
-    unreached = sorted(key for key, n in (seen.get("partitions") or {}).items() if n and key not in entries)
-    whole = bool(listing.get("at")) and not incomplete and not unreached and not missing and listed == seen.get("count")
+    incomplete, unreached, whole = held["incomplete"], held["unreached"], held["whole"]
     where = f"the Supreme Court's website lists under [{collection.title}]({collection.source_page})"
     if whole:
         lead = f"Every document file that {where}, with the file itself, byte for byte, and its text. One row per file."
     else:
-        lead = f"Document files that {where}, each with the file itself, byte for byte, and its text. One row per file. This dataset does not hold every file the listing links: the status below says what it holds and where the gaps are."
+        lead = f"Document files that {where}, each with the file itself, byte for byte, and its text. One row per file. This collection does not hold every file the listing links: the status below says what it holds and where the gaps are."
+    category_title = CATEGORIES[collection.category][0]
     lines += [
         lead,
         "",
-        f"Nothing here is edited by hand, and no text is corrected, normalized or generated. The pipeline and its tests are in [{GITHUB.removeprefix('https://')}]({GITHUB}), and this card is rendered from `manifest.json` in the same commit.",
+        f"This is the `{collection.name}` config of [{repo_id}](https://huggingface.co/datasets/{repo_id}), which holds the collections the site's footer lists under {category_title}, and this card is `{collection.prefix}README.md` there.",
+        "",
+        f"Nothing here is edited by hand, and no text is corrected, normalized or generated. The pipeline and its tests are in [{GITHUB.removeprefix('https://')}]({GITHUB}), and this card is rendered from `{collection.prefix}manifest.json` in the same commit.",
         "",
         "## Status",
         "",
@@ -185,18 +208,18 @@ def render(manifest):
         "",
         "```python",
         "from datasets import load_dataset",
-        f'ds = load_dataset("{repo_id}", split="train")',
+        f'ds = load_dataset("{repo_id}", "{collection.name}", split="train")',
         "```",
         "",
         "```sql",
         "-- DuckDB, straight from the Hub, without the file bytes",
-        f"SELECT id, term, date, docket, title, text_source FROM 'hf://datasets/{repo_id}/data/*.parquet' WHERE listed ORDER BY date DESC LIMIT 10;",
+        f"SELECT id, term, date, docket, title, text_source FROM 'hf://datasets/{repo_id}/{collection.prefix}data/*.parquet' WHERE listed ORDER BY date DESC LIMIT 10;",
         "```",
         "",
         "## Files",
         "",
-        f"- `data/{{partition}}.parquet`: the rows, sorted by id. Partitions are by {collection.partition_label}.",
-        "- `manifest.json`: per partition, the row count, SHA-256 and summary counts; the files that failed and why; the listing pages read; the last 20 runs.",
+        f"- `{collection.prefix}data/{{partition}}.parquet`: the rows, sorted by id. Partitions are by {collection.partition_label}.",
+        f"- `{collection.prefix}manifest.json`: per partition, the row count, SHA-256 and summary counts; the files that failed and why; the listing pages read; the last 20 runs.",
         "",
         "## Schema",
         "",
@@ -224,4 +247,77 @@ def render(manifest):
         f"The pipeline's code is under the MIT License ([{GITHUB.removeprefix('https://')}]({GITHUB})).",
         "",
     ]
+    return "\n".join(lines)
+
+
+def render_category(category, manifests):
+    """The repo's README.md: one config per collection that has rows, and each collection's status in one line, from the manifests of the collections in the repo ({collection: manifest})."""
+    title, page = CATEGORIES[category]
+    members = [collection for collection in COLLECTIONS.values() if collection.category == category]
+    repo_id = members[0].repo_id
+    held = {c.name: status(manifests[c.name]) for c in members if c.name in manifests}
+    present = [c.name for c in members if held.get(c.name, {}).get("entries")]
+    rows = sum(h["rows"] for h in held.values())
+    lines = ["---", f"pretty_name: \"Supreme Court of the United States: {title}\"", *license_lines(any(c.name in LICENSE for c in members)), "language:", "- en",
+             *TAGS, "size_categories:", f"- {size_category(rows)}"]
+    if present:
+        lines += config_lines(*present)
+    lines += [
+        "---", "", f"# Supreme Court of the United States: {title}", "",
+        f"The document files that the Supreme Court's website lists under [{title}]({page}) in its footer, one config per collection, each row a file with the file itself, byte for byte, and its text. Nothing here is edited by hand, and no text is corrected, normalized or generated. The pipeline and its tests are in [{GITHUB.removeprefix('https://')}]({GITHUB}), and this card is rendered from the collections' manifests in the same commit.",
+        "",
+        "## Collections",
+        "",
+        "| Config | Files | Size | Listed now | Last complete run | Status |",
+        "|---|---:|---:|---:|---|---|",
+    ]
+    for collection in members:
+        h = held.get(collection.name)
+        name = f"[`{collection.name}`]({collection.prefix}README.md)"
+        if h is None or h["seen"].get("count") is None:
+            lines.append(f"| {name} | 0 | 0 KB | 0 | none | [{collection.title}]({collection.source_page}): no run has read the listing yet |")
+            continue
+        gaps = []
+        if h["unreached"] or h["incomplete"]:
+            gaps.append(f"{count(len(set(h['unreached']) | set(h['incomplete'])), 'partition')} not yet complete")
+        if h["missing"]:
+            gaps.append(f"{count(len(h['missing']), 'listed file')} not stored")
+        state = "every listed file" if h["whole"] else "; ".join(gaps) or "not every listed file"
+        lines.append(f"| {name} | {h['rows']:,} | {gigabytes(h['file_bytes'])} | {h['listed']:,} of {h['seen']['count']:,} | {h['listing'].get('at') or 'none yet'} | [{collection.title}]({collection.source_page}): {state} |")
+    first = present[0] if present else members[0].name
+    lines += [
+        "",
+        "Each collection's card, linked from its name, says what it holds and where the gaps are, which files failed and why, what is verbatim, and what each column means. Every config has the same columns.",
+        "",
+        "## Use",
+        "",
+        "```python",
+        "from datasets import load_dataset",
+        f'ds = load_dataset("{repo_id}", "{first}", split="train")',
+        "```",
+        "",
+        "```sql",
+        "-- DuckDB, straight from the Hub, without the file bytes",
+        f"SELECT id, term, date, docket, title, text_source FROM 'hf://datasets/{repo_id}/{first}/data/*.parquet' WHERE listed ORDER BY date DESC LIMIT 10;",
+        "```",
+        "",
+        "## Files",
+        "",
+        "- `{collection}/data/{partition}.parquet`: the collection's rows, sorted by id.",
+        "- `{collection}/manifest.json`: per partition, the row count, SHA-256 and summary counts; the files that failed and why; the listing pages read; the last 20 runs.",
+        "- `{collection}/README.md`: the collection's card.",
+        "",
+        "## Related datasets",
+        "",
+    ]
+    for other, (other_title, _) in CATEGORIES.items():
+        if other != category:
+            lines.append(f"- [{category_repo(other)}](https://huggingface.co/datasets/{category_repo(other)}): {other_title}")
+    lines += ["", "## License", ""]
+    grouped = {}
+    for collection in members:
+        grouped.setdefault(LICENSE.get(collection.name, LICENSE["default"]), []).append(f"`{collection.name}`")
+    for text, configs in grouped.items():
+        lines.append(f"- {', '.join(configs)}: {text}")
+    lines += ["", f"The pipeline's code is under the MIT License ([{GITHUB.removeprefix('https://')}]({GITHUB})).", ""]
     return "\n".join(lines)

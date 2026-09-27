@@ -1,6 +1,8 @@
 """Where a dataset lives: a Hugging Face dataset repo, or a local directory for tests and local builds.
 
-The repo holds data/{partition}.parquet, manifest.json (what every partition holds, and where the last listing stood) and README.md (the dataset card, rendered from the manifest). The manifest and the card are staged together and committed with the partitions they describe, so the three cannot disagree on the Hub.
+A collection holds data/{partition}.parquet, manifest.json (what every partition holds, and where the last listing stood) and README.md (the collection's card, rendered from the manifest). The manifest and the card are staged together and committed with the partitions they describe, so the three cannot disagree on the Hub.
+
+One repo holds the collections of one column of the site's footer, each under its own directory (prefix). Callers name paths within the collection (data/..., manifest.json); the store puts them under the prefix. The repo's own README.md, the category card with one config per collection, is rendered from every collection's manifest (root_card) and staged with each of them.
 
 Every Hub commit names its parent (parent_commit). If anything else committed since this store last read or wrote the repo, the Hub refuses the commit and the store raises Superseded instead of overwriting the other writer's work.
 """
@@ -151,13 +153,33 @@ def dir_bytes(path):
 
 
 class _Staging:
-    """Scratch space for one run. Tracks the largest footprint it ever reached, which is the local-disk bound beyond the dataset itself. card, if given, renders README.md from each staged manifest."""
+    """Scratch space for one run. Tracks the largest footprint it ever reached, which is the local-disk bound beyond the dataset itself. card, if given, renders the collection's README.md from each staged manifest; root_card, if given, renders the repo's README.md from the manifests of all its collections."""
 
-    def __init__(self, workdir=None, card=None):
+    def __init__(self, workdir=None, card=None, prefix="", root_card=None):
+        if root_card and not prefix:
+            raise ValueError("a root card needs the collection under a prefix, or the two cards would share README.md")
         self.dir = Path(tempfile.mkdtemp(prefix="scotus-products-", dir=workdir))
         self.card = card
+        self.prefix = prefix
+        self.root_card = root_card
         self.staged = {}
         self.peak_bytes = 0
+        self._siblings = None
+
+    def _path(self, repo_path):
+        return self.prefix + repo_path
+
+    def collection_manifests(self):
+        """{collection: manifest} for every collection in the repo, as stored, with this store's staged manifest in place of its stored one."""
+        if self._siblings is None:
+            # Read once: a commit names its parent, so no other writer can change a sibling between here and this store's commits.
+            self._siblings = self._stored_manifests()
+        manifests = dict(self._siblings)
+        staged = self.staged.get(self._path(MANIFEST))
+        if staged is not None:
+            manifest = json.loads(staged.read_text())
+            manifests[manifest["collection"]] = manifest
+        return manifests
 
     def measure(self):
         self.peak_bytes = max(self.peak_bytes, dir_bytes(self.dir))
@@ -171,18 +193,20 @@ class _Staging:
 
     def stage_partition(self, key, rows):
         repo_path = partition_path(key)
-        local = self.dir / "stage" / repo_path
+        local = self.dir / "stage" / self._path(repo_path)
         stats = write_parquet(rows, local)
-        self.staged[repo_path] = local
+        self.staged[self._path(repo_path)] = local
         self.measure()
         return dict(stats, file=repo_path)
 
     def stage_manifest(self, manifest):
         text = json.dumps(manifest, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
-        self._stage(MANIFEST, text)
+        self._stage(self._path(MANIFEST), text)
         if self.card:
             # From the manifest as stored, not the dict in memory, so a reader who renders the stored manifest gets this card.
-            self._stage(CARD, self.card(json.loads(text)))
+            self._stage(self._path(CARD), self.card(json.loads(text)))
+        if self.root_card:
+            self._stage(CARD, self.root_card(self.collection_manifests()))
 
     def clear(self):
         for local in self.staged.values():
@@ -194,39 +218,55 @@ class _Staging:
 
 
 class LocalStore(_Staging):
-    def __init__(self, root, workdir=None, card=None):
-        super().__init__(workdir, card)
+    """root is the repo's directory; the collection's files are under root/prefix."""
+
+    def __init__(self, root, workdir=None, card=None, prefix="", root_card=None):
+        super().__init__(workdir, card, prefix, root_card)
         self.root = Path(root)
         self.commits = []
+
+    def _local(self, repo_path):
+        return self.root / self._path(repo_path)
 
     def read_manifest(self):
         text = self.read_text(MANIFEST)
         return json.loads(text) if text else None
 
+    def _stored_manifests(self):
+        found = {}
+        for path in sorted(self.root.glob(f"*/{MANIFEST}")):
+            manifest = json.loads(path.read_text())
+            found[manifest["collection"]] = manifest
+        return found
+
     def read_partition(self, key, columns=None):
-        path = self.root / partition_path(key)
+        path = self._local(partition_path(key))
         return read_parquet(path, columns) if path.exists() else []
 
     def iter_rows(self, repo_path, columns=None, batch_size=8):
         """Rows of one partition file a few at a time, so a check over a partition of scanned volumes never holds it all."""
-        handle = pq.ParquetFile(self.root / repo_path)
+        handle = pq.ParquetFile(self._local(repo_path))
         for batch in handle.iter_batches(batch_size=batch_size, columns=columns):
             yield from batch.to_pylist()
 
     def read_table(self, repo_path, columns):
-        return pq.read_table(self.root / repo_path, columns=columns)
+        return pq.read_table(self._local(repo_path), columns=columns)
 
     def read_columns(self, repo_path, columns):
         return self.read_table(repo_path, columns).to_pydict()
 
     def file_sha256s(self, repo_paths):
-        return {repo_path: sha256_file(self.root / repo_path) for repo_path in repo_paths if (self.root / repo_path).exists()}
+        return {repo_path: sha256_file(self._local(repo_path)) for repo_path in repo_paths if self._local(repo_path).exists()}
 
     def list_files(self, prefix=""):
-        return sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file() and str(p.relative_to(self.root)).startswith(prefix))
+        base = self.root / self.prefix
+        if not base.exists():
+            return []
+        return sorted(str(p.relative_to(base)) for p in base.rglob("*") if p.is_file() and str(p.relative_to(base)).startswith(prefix))
 
-    def read_text(self, repo_path):
-        path = self.root / repo_path
+    def read_text(self, repo_path, root=False):
+        """root=True reads a path of the repo itself (the category card) rather than of the collection."""
+        path = self.root / repo_path if root else self._local(repo_path)
         return path.read_text() if path.exists() else None
 
     def commit(self, message):
@@ -250,13 +290,13 @@ class LocalStore(_Staging):
 class HubStore(_Staging):
     """token=False reads anonymously (the datasets are public)."""
 
-    def __init__(self, repo_id, workdir=None, token=None, card=None, api=None):
+    def __init__(self, repo_id, workdir=None, token=None, card=None, api=None, prefix="", root_card=None):
         self.repo_id = repo_id
         self.api = api or HfApi(token=token)
         # Before the scratch directory exists, so a Hub that cannot be reached leaves nothing behind.
         info = self.api.dataset_info(repo_id)
         self.revision = info.sha
-        super().__init__(workdir, card)
+        super().__init__(workdir, card, prefix, root_card)
         self.superseded = None
 
     def _download(self, repo_path):
@@ -271,8 +311,18 @@ class HubStore(_Staging):
         text = self.read_text(MANIFEST)
         return json.loads(text) if text else None
 
+    def _stored_manifests(self):
+        found = {}
+        for path in self.api.list_repo_files(self.repo_id, repo_type="dataset", revision=self.revision):
+            if path.count("/") == 1 and path.endswith("/" + MANIFEST):
+                text = self.read_text(path, root=True)
+                if text:
+                    manifest = json.loads(text)
+                    found[manifest["collection"]] = manifest
+        return found
+
     def read_partition(self, key, columns=None):
-        local = self._download(partition_path(key))
+        local = self._download(self._path(partition_path(key)))
         if local is None:
             return []
         try:
@@ -282,14 +332,14 @@ class HubStore(_Staging):
 
     def iter_rows(self, repo_path, columns=None, batch_size=8):
         fs = HfFileSystem(token=self.api.token)
-        with fs.open(f"datasets/{self.repo_id}@{self.revision}/{repo_path}", "rb") as handle:
+        with fs.open(f"datasets/{self.repo_id}@{self.revision}/{self._path(repo_path)}", "rb") as handle:
             for batch in pq.ParquetFile(handle).iter_batches(batch_size=batch_size, columns=columns):
                 yield from batch.to_pylist()
 
     def read_table(self, repo_path, columns):
         """Reads only the named columns, by HTTP range requests, so verification never downloads the files."""
         fs = HfFileSystem(token=self.api.token)
-        with fs.open(f"datasets/{self.repo_id}@{self.revision}/{repo_path}", "rb") as handle:
+        with fs.open(f"datasets/{self.repo_id}@{self.revision}/{self._path(repo_path)}", "rb") as handle:
             return pq.read_table(handle, columns=columns)
 
     def read_columns(self, repo_path, columns):
@@ -297,19 +347,21 @@ class HubStore(_Staging):
 
     def file_sha256s(self, repo_paths):
         out = {}
-        paths = list(repo_paths)
+        paths = [self._path(path) for path in repo_paths]
         for start in range(0, len(paths), 100):
             for info in self.api.get_paths_info(self.repo_id, paths[start:start + 100], repo_type="dataset", revision=self.revision):
                 lfs = getattr(info, "lfs", None)
                 if lfs is not None:
-                    out[info.path] = lfs.sha256
+                    out[info.path.removeprefix(self.prefix)] = lfs.sha256
         return out
 
     def list_files(self, prefix=""):
-        return sorted(path for path in self.api.list_repo_files(self.repo_id, repo_type="dataset", revision=self.revision) if path.startswith(prefix))
+        full = self._path(prefix)
+        return sorted(path.removeprefix(self.prefix) for path in self.api.list_repo_files(self.repo_id, repo_type="dataset", revision=self.revision) if path.startswith(full))
 
-    def read_text(self, repo_path):
-        local = self._download(repo_path)
+    def read_text(self, repo_path, root=False):
+        """root=True reads a path of the repo itself (the category card) rather than of the collection."""
+        local = self._download(repo_path if root else self._path(repo_path))
         if local is None:
             return None
         try:
@@ -347,12 +399,12 @@ class HubStore(_Staging):
 
     def _landed(self):
         """The head commit if it already holds exactly the manifest staged here, else None."""
-        staged = self.staged.get(MANIFEST)
+        staged = self.staged.get(self._path(MANIFEST))
         if staged is None:
             return None
         head = self.api.dataset_info(self.repo_id).sha
         data = staged.read_bytes()
-        for info in self.api.get_paths_info(self.repo_id, [MANIFEST], repo_type="dataset", revision=head):
+        for info in self.api.get_paths_info(self.repo_id, [self._path(MANIFEST)], repo_type="dataset", revision=head):
             lfs = getattr(info, "lfs", None)
             same = lfs.sha256 == hashlib.sha256(data).hexdigest() if lfs else getattr(info, "blob_id", None) == git_blob_sha1(data)
             if same:

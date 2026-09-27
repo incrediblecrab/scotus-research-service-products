@@ -174,6 +174,19 @@ def group_units(found):
     return units
 
 
+# The columns of the site's footer, as it names and links them (read September 27, 2026), that the datasets follow.
+CATEGORIES = {
+    "opinions": ("Opinions", f"{BASE}/opinions/opinions.aspx"),
+    "oral-arguments": ("Oral Arguments", f"{BASE}/oral_arguments/oral_arguments.aspx"),
+    "case-documents": ("Case Documents", f"{BASE}/case_documents.aspx"),
+}
+
+
+
+def repo_id(category):
+    return f"{OWNER}/scotus-{category}"
+
+
 @dataclass(frozen=True)
 class Collection:
     name: str
@@ -188,10 +201,17 @@ class Collection:
     # The documents are HTML pages rather than PDFs.
     html: bool = False
     notes: tuple = ()
+    # The column of the site's footer that links the collection (a key of CATEGORIES): one dataset repo per column, one directory and config per collection.
+    category: str = None
 
     @property
     def repo_id(self):
-        return f"{OWNER}/scotus-{self.name}"
+        return repo_id(self.category)
+
+    @property
+    def prefix(self):
+        """Where the collection's files sit in its category's repo."""
+        return f"{self.name}/"
 
 
 # ---- listing pages
@@ -404,6 +424,7 @@ COLLECTIONS = {c.name: c for c in (
             "For older terms the listing can link an opinion to a page inside a bound volume or preliminary print rather than to a file of its own. On September 25, 2026 it did so for all 73 entries of October Term 2018, all 63 of 2019 and 15 of the 68 of 2020, and the October Term 2017 page linked all 56 of its entries to four preliminary prints, which the server answered with 404 Not Found. Such a row holds the whole volume, with one entry per opinion and the page its link points to.",
             LIGATURES,
         ),
+        category="opinions",
     ),
     Collection(
         "opinions-relating-to-orders", "Opinions Relating to Orders", f"{BASE}/opinions/relatingtoorders/",
@@ -413,11 +434,13 @@ COLLECTIONS = {c.name: c for c in (
             "The pages for October Terms 2005 through 2010 list 57 opinions in tables without a link to any file, only a citation to the U. S. Reports (counted September 25, 2026), so those terms have no rows here.",
             LIGATURES,
         ),
+        category="opinions",
     ),
     Collection(
         "in-chambers-opinions", "In-Chambers Opinions", f"{BASE}/opinions/in-chambers.aspx",
         single(f"{BASE}/opinions/in-chambers.aspx"), parse_opinion_table, typed_opinion,
         notes=("The Court's page says in-chambers opinions \"will be posted here on the day of their issuance and will remain posted until published in the bound volume of the United States Reports.\" A row the page no longer lists stays in the dataset with listed = false.",),
+        category="opinions",
     ),
     Collection(
         "us-reports", "U. S. Reports", f"{BASE}/opinions/USReports.aspx",
@@ -429,6 +452,7 @@ COLLECTIONS = {c.name: c for c in (
             LIGATURES,
             "Measured September 26, 2026: 13 bound volumes from 529 to 544 set some signs in a font that names its glyphs H and a number, such as H11503, and gives no Unicode value for them, and pdftotext takes the number for a code point, so `text` has 218 characters from blocks such as CJK and Coptic that the volumes do not use. Page 596 of the file of volume 541 prints \"1.5%×2×$2,000=$60\", and `text` has \"1.5%⳯2⳯$2,000⳱$60\"; its page 1097 prints two empty check boxes, and `text` has 䡺 for each. For all 218, the file holds a glyph named H and the character's code point in decimal; pypdf prints the glyph's name instead (/H11033).",
         ),
+        category="opinions",
     ),
     Collection(
         "argument-transcripts", "Argument Transcripts", f"{BASE}/oral_arguments/argument_transcript/",
@@ -438,6 +462,7 @@ COLLECTIONS = {c.name: c for c in (
             "The Court's page on the availability of transcripts says: \"(Heritage Reporting Corporation has provided transcripts for the Court beginning in October Term 2017; prior to that Term, Alderson Reporting Corporation provided the transcripts.)\"",
             "Measured September 26, 2026: 273 transcripts of October Terms 2004 to 2010 " + NO_TEXT_HYPHENS.format(hyphens="17,322") + " The transcript of 07-1372 prints \"purposes --\" at the end of a line on its page 4, and `text` has \"purposes -\". In 50 other transcripts, of October Terms 2004 and 2005, the files draw hyphens with code 0xAD, which `text` gives as a hyphen (U+002D) and pypdf as a soft hyphen (U+00AD), and that accounts for the whole difference the cross-check counts.",
         ),
+        category="oral-arguments",
     ),
     Collection(
         "calendars-and-lists", "Calendars and Lists", f"{BASE}/oral_arguments/calendarsandlists.aspx",
@@ -449,6 +474,7 @@ COLLECTIONS = {c.name: c for c in (
             f"{BASE}/oral_arguments/earlierhearinglists.aspx",
         ),
         parse_calendars, typed_calendar, mutable=True,
+        category="oral-arguments",
     ),
     Collection(
         "orders-of-the-court", "Orders of the Court", f"{BASE}/orders/ordersofthecourt/",
@@ -459,15 +485,18 @@ COLLECTIONS = {c.name: c for c in (
             "Measured September 26, 2026: 33 files of October Terms 2005, 2009 and 2010 " + NO_TEXT_HYPHENS.format(hyphens="1,319"),
             "Some files set bullets and dashes in a font that gives them Private Use Area code points, and `text` keeps those: the \"Rules of Appellate Procedure\" of 04/28/16 prints a bullet on page 38 of the file where `text` has U+F0B7, and that of 04/27/17 prints \"Rule 4. Appeal as of Right—When Taken\" on page 4 where `text` has U+F0BE in place of the em dash (read from the rendered pages on September 26, 2026).",
         ),
+        category="case-documents",
     ),
     Collection(
         "orders-by-circuit", "Orders by Circuit", f"{BASE}/orders/ordersbycircuit/",
         term_pages("orders-by-circuit", BASE + "/orders/ordersbycircuit/{yy}"), parse_circuit, typed_dated_item, html=True,
         notes=("The Court's page says: \"Caution: These electronic orders may contain computer-generated errors or other deviations from the official printed versions.\"", "Each document is an HTML page. The file column holds the page as served, which carries values that change from one request to the next (ASP.NET's __VIEWSTATE and __EVENTVALIDATION fields, and the request values of an analytics script), so file_sha256 need not repeat across downloads. text is the rendered content the Court wrote, which leaves those out: one document fetched twice on September 25, 2026, two hours apart, gave different bytes and the same text.",),
+        category="case-documents",
     ),
     Collection(
         "granted-noted-cases-list", "Granted/Noted Cases List", f"{BASE}/orders/grantednotedlists.aspx",
         single(f"{BASE}/orders/grantednotedlists.aspx"), parse_granted, typed_term_link, partition_label="all", mutable=True,
+        category="case-documents",
     ),
     Collection(
         "journal", "Journal", f"{BASE}/orders/journal.aspx",
@@ -475,6 +504,7 @@ COLLECTIONS = {c.name: c for c in (
         notes=(
             "The journals from 1993 onward are listed on the Journal page and the earlier ones on the Scanned Journals page, which says: \"These volumes were scanned from a working collection at the Supreme Court. Please disregard any stray marks on the initial pages of each volume.\" A scan's only text is the OCR layer inside the file, which is in ocr_text and is not verbatim.",
         ),
+        category="case-documents",
     ),
     Collection(
         "original-jurisdiction-records-and-briefs", "Original Jurisdiction Records & Briefs", f"{BASE}/casedocuments/original_jurisdiction_cases.aspx",
@@ -483,6 +513,7 @@ COLLECTIONS = {c.name: c for c in (
             "The Court's page says: \"The collection here is a digitized version of the physical collection in the Supreme Court's Library and may not contain all records and briefs that were filed in a given case.\" Besides the parties' filings, the listing has reports of special masters and documents titled as the Court's own, such as \"Opinion of the Court\", \"Slip Opinion\", \"Order\" and \"Decree\" (read from the listing's document titles on September 25, 2026).",
             "A scanned file's only text is the OCR layer inside it, which is in ocr_text and is not verbatim; the text-source table above counts the files of each kind.",
         ),
+        category="case-documents",
     ),
 )}
 
