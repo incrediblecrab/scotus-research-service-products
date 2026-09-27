@@ -1,0 +1,120 @@
+# At 00:00 and 12:00 UTC, sync every collection with www.supremecourt.gov within one time budget, in the order sources.COLLECTIONS lists them: each collection reads its listing pages, fetches what is new or changed, and commits to its category's dataset. Each collection still to come keeps --reserve-minutes of the budget, so a long backfill cannot starve the updates after it. Then verify each collection the run changed against its manifest. A run that ran out of budget while files remained starts the next run itself.
+# Writes to Hugging Face use Trusted Publishing: with `id-token: write`, the CLI sets HF_OIDC_RESOURCE to each collection's dataset before writing to it, so no Hugging Face token is stored anywhere. The workflow uses no secret.
+name: pipeline
+
+on:
+  schedule:
+    - cron: "0 0,12 * * *"
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Collection to sync, or all"
+        default: "all"
+      budget_minutes:
+        description: "Minutes the whole sync may take (empty: 290)"
+        default: ""
+      args:
+        description: "Extra run arguments for a bounded test, e.g. --local /tmp/smoke --partitions OT2025 --max-units 1 (skips verify and never starts another run)"
+        default: ""
+
+permissions: {}
+
+# One run at a time: a scheduled run that starts while another run is still syncing waits for it. GitHub keeps at most one run waiting and cancels older waiting runs.
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # GitHub stops a hosted job at 360 minutes; the default budget of 290 leaves room for setup, the commits after the budget runs out, and verify.
+    timeout-minutes: 355
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      more: ${{ steps.sync.outputs.more }}
+      fetched: ${{ steps.sync.outputs.fetched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # A scanned volume of the United States Reports is up to about 160 MB and a partition holds ten; the runner starts with about 14 GB free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / "$RUNNER_TEMP"
+      # Ubuntu's poppler, not the Homebrew poppler of the local build: each row's extractor column names the version that produced its text.
+      - name: Install poppler
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q poppler-utils
+          pdftotext -v
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -q .
+      - name: Sync
+        id: sync
+        env:
+          DATASET: ${{ inputs.dataset || 'all' }}
+          BUDGET: ${{ inputs.budget_minutes || '290' }}
+          EXTRA_ARGS: ${{ inputs.args }}
+        run: |
+          set -o pipefail
+          python -m scotus_products run --dataset "$DATASET" --total-budget-minutes "$BUDGET" --workdir "$RUNNER_TEMP" $EXTRA_ARGS | tee run.json
+      - name: Verify what changed
+        if: ${{ !cancelled() && !inputs.args && steps.sync.outputs.changed_collections != '' }}
+        env:
+          CHANGED: ${{ steps.sync.outputs.changed_collections }}
+        run: |
+          set -o pipefail
+          status=0
+          for name in ${CHANGED//,/ }; do
+            python -m scotus_products verify --dataset "$name" --workdir "$RUNNER_TEMP" | tee -a verify.json || status=1
+          done
+          exit $status
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          df -h / | tail -1
+          for step in run verify; do
+            if [ -s "$step.json" ]; then { echo "### $step"; echo '```json'; cat "$step.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+
+  # GitHub starts scheduled runs late, or drops them, when it is busy. A sync that ran out of budget while files remained therefore starts the next run instead of waiting, as a backfill of the scanned United States Reports needs several runs. Only a run that fetched something continues the chain, so a run that makes no progress cannot restart itself forever. A job of its own, so the job that parses downloaded pages never holds `actions: write`.
+  continue:
+    needs: sync
+    if: ${{ !cancelled() && !inputs.args && needs.sync.outputs.more == 'true' && needs.sync.outputs.fetched != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Start the next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DATASET: ${{ inputs.dataset || 'all' }}
+        run: gh workflow run pipeline.yml --ref "$GITHUB_REF_NAME" -f dataset="$DATASET"
+
+  # GitHub disables schedules in a public repository after 60 days without repository activity. This job makes no commit to prevent that: GitHub called keepalive commits a violation of its Terms for circumventing that policy (https://github.com/ddev/github-action-add-on-test/issues/46). Instead it fails once the last commit is 50 days old, so GitHub notifies the user who last changed the cron, who can push one. It runs on every scheduled run, because GitHub starts scheduled runs late or drops them. The log names the schedule that started the run.
+  inactivity:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Fail once the repository has gone 50 days without a commit
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          echo "schedule: $SCHEDULE"
+          days=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "last commit $days days ago"
+          if [ "$days" -ge 50 ]; then
+            echo "::error::No commit in $days days. GitHub disables this schedule after 60 days without repository activity, so push a commit to keep the dataset updating."
+            exit 1
+          fi

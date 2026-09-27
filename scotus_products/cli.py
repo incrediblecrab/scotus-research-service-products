@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import os
 import shutil
 import sys
 import time
@@ -17,6 +18,8 @@ from .sources import COLLECTIONS, Listing
 from .store import CARD, partition_path
 
 ALL = "all"
+# Run counts that mean the dataset now holds something it did not.
+CHANGES = ("added", "replaced", "updated", "delisted", "relisted")
 
 
 def open_store(args, collection, write=False):
@@ -26,7 +29,24 @@ def open_store(args, collection, write=False):
     cards = {"card": render, "prefix": collection.prefix, "root_card": partial(render_category, collection.category)}
     if args.local:
         return LocalStore(Path(args.local) / collection.repo_id.split("/")[1], workdir=args.workdir, **cards)
+    if write:
+        trusted_publishing(collection.repo_id)
     return HubStore(collection.repo_id, workdir=args.workdir, token=None if write else False, **cards)
+
+
+def trusted_publishing(repo_id):
+    """On GitHub Actions, huggingface_hub trades the job's OIDC id token for a short-lived token scoped to one repo, and refreshes it before it expires; set per repo, because one run writes to several. The HfApi must be created with token=None, so every request asks for the token of the repo named here."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        os.environ["HF_OIDC_RESOURCE"] = f"datasets/{repo_id}"
+
+
+def step_outputs(**values):
+    """Values for later workflow steps and jobs, when run as a GitHub Actions step."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a") as handle:
+            for key, value in values.items():
+                handle.write(f"{key}={json.dumps(value) if not isinstance(value, str) else value}\n")
 
 
 def names(args):
@@ -38,14 +58,20 @@ def cmd_run(args):
         if not shutil.which(tool):
             raise SystemExit(f"{tool} is missing: install poppler (brew install poppler, or apt-get install poppler-utils)")
     only = frozenset(key.strip() for key in args.partitions.split(",") if key.strip()) if args.partitions else None
-    status = 0
+    status, more, changed, counts = 0, [], [], {"commits": 0, "fetched": 0}
+    todo = names(args)
+    end = time.monotonic() + args.total_budget_minutes * 60 if args.total_budget_minutes else None
     fetcher = Fetcher()
     try:
-        for name in names(args):
+        for index, name in enumerate(todo):
             collection = COLLECTIONS[name]
             store = open_store(args, collection, write=True)
             started = time.monotonic()
-            ctx = Context(store=store, collection=collection, fetcher=fetcher, deadline=started + args.budget_minutes * 60, only=only, max_units=args.max_units,
+            deadline = started + args.budget_minutes * 60
+            if end is not None:
+                # Each collection still to come keeps reserve_minutes of the total, so a long backfill cannot starve the updates after it.
+                deadline = min(deadline, end - (len(todo) - index - 1) * args.reserve_minutes * 60)
+            ctx = Context(store=store, collection=collection, fetcher=fetcher, deadline=deadline, only=only, max_units=args.max_units,
                           refetch=args.refetch, revalidate_all=args.revalidate_all, workers=args.workers, workdir=args.workdir, checkpoint_seconds=args.checkpoint_minutes * 60,
                           min_free_bytes=int(args.min_free_gb * 2**30))
             try:
@@ -54,11 +80,18 @@ def cmd_run(args):
                 store.close()
             run.update(collection=name, minutes=round((time.monotonic() - started) / 60, 1), peak_scratch_bytes=store.peak_bytes)
             print(json.dumps(run, indent=1), flush=True)
+            for key in counts:
+                counts[key] += run.get(key) or 0
+            if run["stopped"] == "budget":
+                more.append(name)
+            if any(run.get(key) for key in CHANGES):
+                changed.append(name)
             if run["stopped"] not in CLEAN_STOPS + ("deferred",):
                 print(f"warning: {name} stopped: {run['stopped']}", file=sys.stderr)
                 status = 1
     finally:
         fetcher.close()
+        step_outputs(more="true" if more else "false", more_collections=",".join(more), changed_collections=",".join(changed), **counts)
     return status
 
 
@@ -162,7 +195,9 @@ def main(argv=None):
             p.add_argument("--max-units", type=int, help="fetch at most this many files per partition (smoke runs)")
             p.add_argument("--refetch", action="store_true", help="fetch every listed file again (after an extractor change)")
             p.add_argument("--revalidate-all", action="store_true", help="ask the server about every stored file, in any collection, and fetch again the ones that changed")
-            p.add_argument("--budget-minutes", type=float, default=300.0)
+            p.add_argument("--budget-minutes", type=float, default=300.0, help="minutes each collection may sync")
+            p.add_argument("--total-budget-minutes", type=float, help="minutes the whole run may take; each collection still to come keeps --reserve-minutes of it")
+            p.add_argument("--reserve-minutes", type=float, default=10.0)
             p.add_argument("--checkpoint-minutes", type=float, default=10.0)
             p.add_argument("--min-free-gb", type=float, default=10.0, help="stop before a download when the scratch directory's disk has less free space than this")
         if command == "card":

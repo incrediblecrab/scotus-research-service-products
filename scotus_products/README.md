@@ -8,7 +8,7 @@ The pipeline package, run as `python -m scotus_products {list,run,verify,card,su
 
 **Files:**
 
-- `cli.py`, `__main__.py`: the commands: `list` reads only the listing, `run` syncs within a time budget, `verify` checks a dataset, `card` renders its card, and `summarize` recounts partition summaries.
+- `cli.py`, `__main__.py`: the commands: `list` reads only the listing, `run` syncs within a time budget (`--total-budget-minutes` bounds a `--dataset all` run and keeps `--reserve-minutes` for each collection still to come; on GitHub Actions it names each dataset for Trusted Publishing before writing to it and writes step outputs for the workflow), `verify` checks a dataset, `card` renders its card, and `summarize` recounts partition summaries.
 - `sources.py`: each collection's pages, parser, partitions, typed fields, notes, and the footer column (category) whose dataset holds it.
 - `markup.py`: an HTML page's rendered text, and links resolved to file ids.
 - `extract.py`: `pdftotext -raw`, the scanned-page test, the pypdf cross-check, and HTML text.

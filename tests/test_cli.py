@@ -104,3 +104,41 @@ def test_card_write_on_the_hub_authenticates_and_a_card_to_print_does_not(monkey
     monkeypatch.setattr("scotus_products.store.HubStore", Hub)
     assert main("card", "--dataset", NAME) == 0 and main("card", "--dataset", NAME, "--write") == 0
     assert tokens == [False, None] and commits == [f"{NAME}: card"]
+
+
+def test_a_run_on_actions_names_each_repo_for_trusted_publishing_keeps_a_reserve_per_collection_and_reports_what_is_left(monkeypatch, tmp_path, capsys):
+    seen = []
+
+    class Hub:
+        def __init__(self, repo_id, workdir=None, token=None, card=None, prefix="", root_card=None):
+            assert token is None
+            self.repo_id, self.peak_bytes = repo_id, 0
+
+        def close(self):
+            pass
+
+    def sync(ctx, listing):
+        seen.append((ctx.collection.name, ctx.store.repo_id, cli.os.environ.get("HF_OIDC_RESOURCE"), ctx.deadline))
+        return {"finished": ctx.collection.name != "us-reports", "stopped": "budget" if ctx.collection.name == "us-reports" else None, "commits": 2, "fetched": 1,
+                "added": int(ctx.collection.name == "journal"), "delisted": int(ctx.collection.name == "orders-by-circuit")}
+
+    output = tmp_path / "output"
+    monkeypatch.setattr("scotus_products.store.HubStore", Hub)
+    monkeypatch.setattr(cli, "sync", sync)
+    monkeypatch.setattr(cli, "Fetcher", lambda: type("F", (), {"close": lambda self: None})())
+    monkeypatch.setattr(cli, "Listing", lambda collection, fetcher: None)
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: tool)
+    monkeypatch.setattr(cli.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.delenv("HF_OIDC_RESOURCE", raising=False)
+    assert main("run", "--dataset", "all", "--total-budget-minutes", "100", "--reserve-minutes", "5") == 0
+    capsys.readouterr()
+    assert [(name, resource) for name, _, resource, _ in seen] == [(name, f"datasets/{repo}") for name, repo, _, _ in seen]
+    assert {repo for _, repo, _, _ in seen} == {"incrediblecrab/scotus-opinions", "incrediblecrab/scotus-oral-arguments", "incrediblecrab/scotus-case-documents"}
+    assert [deadline for *_, deadline in seen] == [1000 + 100 * 60 - (len(seen) - 1 - index) * 5 * 60 for index in range(len(seen))]
+    assert output.read_text() == f"more=true\nmore_collections=us-reports\nchanged_collections=orders-by-circuit,journal\ncommits={2 * len(seen)}\nfetched={len(seen)}\n"
+    monkeypatch.delenv("GITHUB_ACTIONS")
+    monkeypatch.delenv("HF_OIDC_RESOURCE")
+    seen.clear()
+    assert main("run", "--dataset", NAME) == 0 and seen[0][2] is None and seen[0][3] == 1000 + 300 * 60

@@ -11,8 +11,11 @@ This repository builds Hugging Face datasets of the eleven Supreme Court documen
 - [`scotus_products/`](scotus_products/README.md): the pipeline package
 - [`tests/`](tests/README.md): offline tests
 - [`pyproject.toml`](pyproject.toml): pinned dependencies; PDFs also need poppler
+- [`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml): the schedule that keeps the datasets current
 
 **Try it:** `pip install .`, then `python -m scotus_products run --dataset in-chambers-opinions --local /tmp/scotus`, which writes `/tmp/scotus/scotus-opinions/in-chambers-opinions/` as the Hub holds it; `python -m scotus_products verify --dataset in-chambers-opinions --local /tmp/scotus --deep --live` also checks the live sources.
+
+**Schedule:** GitHub Actions runs [`pipeline.yml`](.github/workflows/pipeline.yml) at 00:00 and 12:00 UTC; GitHub starts scheduled runs late when it is busy, often by hours. A run syncs all eleven collections in turn within 290 minutes, with 10 minutes kept for each collection still to come, then verifies each collection it changed against its manifest. A run that ran out of time while files remained, as a backfill does, starts the next run itself, but only if it fetched something. Writes use Hugging Face Trusted Publishing: the job's OIDC token is traded for a short-lived token scoped to the dataset being written, so no Hugging Face token is stored in the repository. Each dataset's Trusted Publisher names this repository, branch `main` and `pipeline.yml`. On the runner, poppler comes from Ubuntu's `poppler-utils`, which is older than the Homebrew poppler of the local build; each row's `extractor` column names the version that produced its text, and `verify --deep` should run with the version the rows name. A manual run (**Run workflow**) takes a collection, a budget and extra run arguments; with extra arguments it skips verify and never starts another run. The `inactivity` job fails once the repository has gone 50 days without a commit, because GitHub disables the schedule of a public repository after 60 days without activity.
 
 ## License
 
