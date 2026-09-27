@@ -44,6 +44,11 @@ def shown_terms(main):
     return {int(year) for year in _TERM_YEAR.findall(field(main))}
 
 
+def reread_url(url):
+    """url with a query string the Court's pages ignore. The site's CDN keeps its copies by the whole URL, so this reaches a copy apart from the one that showed another term. On September 27, 2026, from a home network, argument_audio/2017 came from the CDN's copy of the October Term 2025 page (Last-Modified January 22, 2026, Server-Timing cdn-cache REVALIDATE), while argument_audio/2017?reread=1 missed the cache and the origin answered with the October Term 2017 page (Last-Modified October 24, 2025, 63 entries); the GitHub runner that listed the collection that day was served the 2017 page at the plain URL."""
+    return url + ("&" if "?" in url else "?") + "reread=1"
+
+
 def current_term(today):
     """The October Term in progress: a term starts on the first Monday of October, and the site files the weeks before it under the term that is ending."""
     return today.year if today.month >= 10 else today.year - 1
@@ -885,7 +890,7 @@ COLLECTIONS = {c.name: c for c in (
 
 
 class Listing:
-    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty. A term page that shows another term (see shown_terms) lists nothing for its term: its entries are the other term's, so they are not taken, and where the last complete listing found entries on it, pipeline.held_pages holds what they listed."""
+    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty. A term page that shows another term (see shown_terms) is read again at reread_url; where that shows its term, its entries are taken and the page records the terms the plain URL showed as `reread`. Otherwise it lists nothing for its term: its entries are the other term's, so they are not taken, and where the last complete listing found entries on it, pipeline.held_pages holds what they listed."""
 
     def __init__(self, collection, fetcher, today=None):
         self.collection = collection
@@ -901,6 +906,15 @@ class Listing:
             raise ListingError(f"{url} answered {response.status_code}")
         return response.content
 
+    def reread(self, url, term):
+        """The main column of the page at reread_url(url), or None where it redirects, fails or does not show term."""
+        try:
+            data = self.read(reread_url(url))
+            main = None if data is None else main_content(parse(data))
+        except (ListingError, ValueError):
+            return None
+        return main if main is not None and sorted(shown_terms(main)) == [term] else None
+
     def list_all(self):
         found = []
         for url, term in self.collection.pages(self.today):
@@ -915,11 +929,14 @@ class Listing:
             except ValueError as error:
                 raise ListingError(f"{url}: {error}") from error
             shown = sorted(shown_terms(main)) if term is not None else []
-            if shown and shown != [term]:
-                self.pages[url] = {"term": term, "entries": 0, "shown_term": shown}
-                continue
+            reread = bool(shown) and shown != [term]
+            if reread:
+                main = self.reread(url, term)
+                if main is None:
+                    self.pages[url] = {"term": term, "entries": 0, "shown_term": shown}
+                    continue
             entries = self.collection.parse(main, url, term)
-            self.pages[url] = {"term": term, "entries": len(entries)}
+            self.pages[url] = {"term": term, "entries": len(entries)} | ({"reread": shown} if reread else {})
             found += entries
         units = group_units(found)
         head = {"count": len(units), "entries": len(found), "pages": len(self.pages)}

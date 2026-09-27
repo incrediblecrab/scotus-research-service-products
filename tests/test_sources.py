@@ -6,7 +6,7 @@ import pytest
 
 from conftest import BASE, Response, page_bytes
 from scotus_products.markup import main_content, parse, render, squash
-from scotus_products.sources import COLLECTIONS, Listing, ListingError, current_term, group_units, iso_date
+from scotus_products.sources import COLLECTIONS, Listing, ListingError, current_term, group_units, iso_date, reread_url
 
 TODAY = date(2026, 9, 25)
 
@@ -41,6 +41,7 @@ PAGES = [
     ("about-the-court", "about_faq_aspx", "about/faq.aspx", None, 4, 4, 1),
     ("about-the-court", "about_code_of_conduct_for_justices_aspx", "about/code-of-conduct-for-justices.aspx", None, 2, 2, 2),
     ("argument-audio", "oral_arguments_argument_audio_2025", "oral_arguments/argument_audio/2025", 2025, 58, 58, 7),
+    ("argument-audio", "oral_arguments_argument_audio_2017", "oral_arguments/argument_audio/2017", 2017, 63, 63, 7),
 ]
 IDS = [f"{name}:{fixture}" for name, fixture, *_ in PAGES]
 
@@ -231,15 +232,32 @@ def test_listing_counts_a_redirected_term_page_as_empty():
     assert listing.pages[BASE + "orders/ordersofthecourt/26"] == {"term": 2026, "entries": 0, "redirected": True}
 
 
-def test_listing_takes_nothing_from_a_term_page_that_shows_another_term():
-    # On September 27, 2026 the server answered argument_audio/2017 with a copy of the October Term 2025 page.
-    fixture = page_bytes("oral_arguments_argument_audio_2025")
-    answers = {BASE + "oral_arguments/argument_audio/2017": Response(200, fixture), BASE + "oral_arguments/argument_audio/2025": Response(200, fixture)}
+def test_listing_rereads_a_term_page_that_shows_another_term():
+    # On September 27, 2026 the CDN answered argument_audio/2017 with its copy of the October Term 2025 page, and argument_audio/2017?reread=1 with the October Term 2017 page, which the fixture is.
+    url = BASE + "oral_arguments/argument_audio/2017"
+    answers = {url: Response(200, page_bytes("oral_arguments_argument_audio_2025")), reread_url(url): Response(200, page_bytes("oral_arguments_argument_audio_2017"))}
     listing = Listing(COLLECTIONS["argument-audio"], Pages(answers), today=TODAY)
     head, units = listing.list_all()
-    assert listing.pages[BASE + "oral_arguments/argument_audio/2017"] == {"term": 2017, "entries": 0, "shown_term": [2025]}
+    assert listing.pages[url] == {"term": 2017, "entries": 63, "reread": [2025]}
+    assert head["entries"] == 63 and {entry["term"] for unit in units.values() for entry in unit.entries} == {2017}
+    assert {entry["listing"] for unit in units.values() for entry in unit.entries} == {url}
+
+
+@pytest.mark.parametrize("reread", [None, Response(404, b""), Response(200, page_bytes("oral_arguments_argument_audio_2025"))], ids=["redirected", "failed", "another-term"])
+def test_listing_takes_nothing_from_a_term_page_that_shows_another_term(reread):
+    fixture = page_bytes("oral_arguments_argument_audio_2025")
+    url = BASE + "oral_arguments/argument_audio/2017"
+    answers = {url: Response(200, fixture), BASE + "oral_arguments/argument_audio/2025": Response(200, fixture)} | ({reread_url(url): reread} if reread else {})
+    listing = Listing(COLLECTIONS["argument-audio"], Pages(answers), today=TODAY)
+    head, units = listing.list_all()
+    assert listing.pages[url] == {"term": 2017, "entries": 0, "shown_term": [2025]}
     assert listing.pages[BASE + "oral_arguments/argument_audio/2025"] == {"term": 2025, "entries": 58}
     assert head["entries"] == 58 and {entry["term"] for unit in units.values() for entry in unit.entries} == {2025}
+
+
+def test_reread_url_adds_a_query_string():
+    assert reread_url(BASE + "oral_arguments/argument_audio/2017") == BASE + "oral_arguments/argument_audio/2017?reread=1"
+    assert reread_url(BASE + "x.aspx?term=2017") == BASE + "x.aspx?term=2017&reread=1"
 
 
 def test_listing_refuses_a_single_page_that_redirects_or_fails():

@@ -24,7 +24,7 @@ from huggingface_hub.errors import EntryNotFoundError, RemoteEntryNotFoundError
 from .cli import step_outputs, trusted_publishing
 from .http import Blocked, Fetcher, QuotaExhausted, Unavailable
 from .markup import field, parse, render, resolve, squash
-from .sources import BASE, COLLECTIONS, iso_date, long_date, repo_id, shown_terms
+from .sources import BASE, COLLECTIONS, iso_date, long_date, repo_id, reread_url, shown_terms
 from .store import MANIFEST, HubStore, LocalStore, schema_differences, sha256_file
 
 REPO_ID = repo_id("cases")
@@ -741,11 +741,14 @@ def audio_for_term(fetcher, term, wanted, deadline):
     response = fetcher.get(listing_url)
     if response.status_code != 200:
         return {}, {"listing_status": response.status_code, "pages": 0}
-    doc = parse(response.content)
-    shown = sorted(shown_terms((doc.xpath('//div[@id="pagemaindiv"]') or [doc])[0]))
+    stats = {"listing_status": response.status_code}
+    shown = listing_terms(response.content)
     if shown and shown != [term]:
-        # Another term's page (see sources.shown_terms): its links are that term's arguments, and a docket argued in both terms would get the wrong audio.
-        return {}, {"listing_status": response.status_code, "shown_term": shown, "pages": 0}
+        # Another term's page (see sources.shown_terms): its links are that term's arguments, and a docket argued in both terms would get the wrong audio, so links come only from a re-read that shows the term.
+        again = fetcher.get(reread_url(listing_url))
+        if again.status_code != 200 or listing_terms(again.content) != [term]:
+            return {}, stats | {"shown_term": shown, "pages": 0}
+        response, stats["reread"] = again, shown
     pages = parse_audio_listing(response.content, listing_url)
     out, seen = {}, {}
     for docket in sorted(wanted):
@@ -757,7 +760,12 @@ def audio_for_term(fetcher, term, wanted, deadline):
             seen[page] = [parse_audio_page(r.content, page)] if r.status_code == 200 else None
         if seen[page]:
             out[docket] = seen[page]
-    return out, {"listing_status": response.status_code, "pages": len(seen)}
+    return out, stats | {"pages": len(seen)}
+
+
+def listing_terms(content):
+    doc = parse(content)
+    return sorted(shown_terms((doc.xpath('//div[@id="pagemaindiv"]') or [doc])[0]))
 
 
 def assemble_rows(term, cases, pages, audio):

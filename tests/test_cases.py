@@ -11,8 +11,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from conftest import page_bytes
 from scotus_products import cases
 from scotus_products.http import Blocked
+from scotus_products.sources import reread_url
 from scotus_products.store import MANIFEST, sha256_file
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cases"
@@ -121,14 +123,26 @@ def test_audio_pages_give_mp3_links():
 
 
 def test_audio_for_term_takes_no_links_from_another_terms_listing():
-    # On September 27, 2026 the server answered argument_audio/2017 with a copy of the October Term 2025 page.
+    # On September 27, 2026 the CDN answered argument_audio/2017 with its copy of the October Term 2025 page.
     listing, case_page = read("oral_arguments_argument_audio_2024.html"), "https://www.supremecourt.gov/oral_arguments/audio/2024/22-7466"
-    site = Site({"https://www.supremecourt.gov/oral_arguments/argument_audio/2024": listing, "https://www.supremecourt.gov/oral_arguments/argument_audio/2017": listing, case_page: read("audio_case.html")})
+    plain = "https://www.supremecourt.gov/oral_arguments/argument_audio/2017"
+    site = Site({"https://www.supremecourt.gov/oral_arguments/argument_audio/2024": listing, plain: listing, case_page: read("audio_case.html")})
+    # The re-read answers the site's 404 page, then another term's page.
     assert cases.audio_for_term(site, 2017, ["22-7466"], None) == ({}, {"listing_status": 200, "shown_term": [2024], "pages": 0})
-    assert site.asked(case_page) == 0
+    site.pages[reread_url(plain)] = listing
+    assert cases.audio_for_term(site, 2017, ["22-7466"], None) == ({}, {"listing_status": 200, "shown_term": [2024], "pages": 0})
+    assert site.asked(case_page) == 0 and site.asked(reread_url(plain)) == 2
     found, stats = cases.audio_for_term(site, 2024, ["22-7466"], None)
     assert found == {"22-7466": [{"page_url": case_page, "mp3_url": "https://www.supremecourt.gov/media/audio/mp3files/22-7466.mp3", "date": "2024-10-09"}]}
     assert stats == {"listing_status": 200, "pages": 1}
+
+
+def test_audio_for_term_takes_links_from_a_reread_that_shows_the_term():
+    listing_url, case_page = "https://www.supremecourt.gov/oral_arguments/argument_audio/2024", "https://www.supremecourt.gov/oral_arguments/audio/2024/22-7466"
+    site = Site({listing_url: page_bytes("oral_arguments_argument_audio_2025"), reread_url(listing_url): read("oral_arguments_argument_audio_2024.html"), case_page: read("audio_case.html")})
+    found, stats = cases.audio_for_term(site, 2024, ["22-7466"], None)
+    assert found == {"22-7466": [{"page_url": case_page, "mp3_url": "https://www.supremecourt.gov/media/audio/mp3files/22-7466.mp3", "date": "2024-10-09"}]}
+    assert stats == {"listing_status": 200, "reread": [2025], "pages": 1}
 
 
 @pytest.mark.parametrize("docket_field, file_id, expected", [
