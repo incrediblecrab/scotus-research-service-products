@@ -191,10 +191,14 @@ def check_listing(base, pages):
 
 
 def held_pages(base, pages):
-    """Term pages that showed another term (sources.shown_terms) where the last complete listing found entries, one message each. Their entries are not in this listing, so the run leaves the rows they listed as they are: it delists nothing, skips the partitions the listing gives no files, and does not publish its listing, so the next run compares its pages with the same complete listing."""
+    """Term pages that showed another term, by their label or their entries' dates (sources.Listing), where the last complete listing found entries, one message each. Their entries are not in this listing, so the run leaves the rows they listed as they are: it delists nothing, skips the partitions the listing gives no files, and does not publish its listing, so the next run compares its pages with the same complete listing."""
     before = ((base or {}).get("listing") or {}).get("pages") or {}
-    return [f"{url} shows Term Year {', '.join(map(str, page['shown_term']))}, not {page['term']}, so what the last complete listing found there ({before[url]['entries']} entries) is left as it is"
-            for url, page in sorted(pages.items()) if page.get("shown_term") and (before.get(url) or {}).get("entries")]
+    held = []
+    for url, page in sorted(pages.items()):
+        if page.get("shown_term") and (before.get(url) or {}).get("entries"):
+            by = " by its entries' dates" if page.get("shown_by") == "dates" else ""
+            held.append(f"{url} shows Term Year {', '.join(map(str, page['shown_term']))}{by}, not {page['term']}, so what the last complete listing found there ({before[url]['entries']} entries) is left as it is")
+    return held
 
 
 def sync(ctx, listing):

@@ -4,9 +4,9 @@ from datetime import date
 
 import pytest
 
-from conftest import BASE, Response, page_bytes
+from conftest import BASE, Response, collection, page_bytes
 from scotus_products.markup import main_content, parse, render, squash
-from scotus_products.sources import COLLECTIONS, Listing, ListingError, current_term, group_units, iso_date, reread_url
+from scotus_products.sources import COLLECTIONS, Listing, ListingError, current_term, group_units, iso_date, reread_url, shown_terms
 
 TODAY = date(2026, 9, 25)
 
@@ -24,6 +24,8 @@ PAGES = [
     ("calendars-and-lists", "oral_arguments_earlierdaycalls_aspx", "oral_arguments/earlierdaycalls.aspx", None, 340, 340, 9),
     ("orders-of-the-court", "orders_ordersofthecourt_25", "orders/ordersofthecourt/25", 2025, 117, 117, 1),
     ("orders-by-circuit", "orders_ordersbycircuit_09", "orders/ordersbycircuit/09", 2009, 30, 30, 1),
+    ("orders-by-circuit", "orders_ordersbycircuit_22", "orders/ordersbycircuit/22", 2022, 32, 32, 1),
+    ("orders-by-circuit", "orders_ordersbycircuit_23", "orders/ordersbycircuit/23", 2023, 31, 31, 1),
     ("granted-noted-cases-list", "orders_grantednotedlists_aspx", "orders/grantednotedlists.aspx", None, 20, 20, 1),
     ("journal", "orders_journal_aspx", "orders/journal.aspx", None, 33, 33, 4),
     ("journal", "orders_scannedjournals_aspx", "orders/scannedjournals.aspx", None, 104, 104, 12),
@@ -238,7 +240,7 @@ def test_listing_rereads_a_term_page_that_shows_another_term():
     answers = {url: Response(200, page_bytes("oral_arguments_argument_audio_2025")), reread_url(url): Response(200, page_bytes("oral_arguments_argument_audio_2017"))}
     listing = Listing(COLLECTIONS["argument-audio"], Pages(answers), today=TODAY)
     head, units = listing.list_all()
-    assert listing.pages[url] == {"term": 2017, "entries": 63, "reread": [2025]}
+    assert listing.pages[url] == {"term": 2017, "entries": 63, "reread": [2025], "shown_by": "label"}
     assert head["entries"] == 63 and {entry["term"] for unit in units.values() for entry in unit.entries} == {2017}
     assert {entry["listing"] for unit in units.values() for entry in unit.entries} == {url}
 
@@ -250,9 +252,59 @@ def test_listing_takes_nothing_from_a_term_page_that_shows_another_term(reread):
     answers = {url: Response(200, fixture), BASE + "oral_arguments/argument_audio/2025": Response(200, fixture)} | ({reread_url(url): reread} if reread else {})
     listing = Listing(COLLECTIONS["argument-audio"], Pages(answers), today=TODAY)
     head, units = listing.list_all()
-    assert listing.pages[url] == {"term": 2017, "entries": 0, "shown_term": [2025]}
+    assert listing.pages[url] == {"term": 2017, "entries": 0, "shown_term": [2025], "shown_by": "label"}
     assert listing.pages[BASE + "oral_arguments/argument_audio/2025"] == {"term": 2025, "entries": 58}
     assert head["entries"] == 58 and {entry["term"] for unit in units.values() for entry in unit.entries} == {2025}
+
+
+TERM_PAGES = [page for page in PAGES if page[3] is not None]
+
+
+@pytest.mark.parametrize("name,fixture,path,term,entries,files,partitions", TERM_PAGES, ids=[f"{name}:{fixture}" for name, fixture, *_ in TERM_PAGES])
+def test_every_saved_term_page_shows_its_own_term_by_its_dates(name, fixture, path, term, entries, files, partitions):
+    _, found = parsed(name, fixture, path, term)
+    assert Listing(COLLECTIONS[name], None, today=TODAY).dates_show(found, term) == []
+
+
+def test_dates_show_another_term_where_fewer_than_half_of_the_dated_entries_fall_in_the_page_term():
+    listing = Listing(collection(), None, today=TODAY)
+    entries = [("a", "a", {"date": "10/03/22"}, "OT2022"), ("b", "b", {"date": "10/07/24"}, "OT2022"), ("c", "c", {"date": "10/02/23"}, "OT2022"), ("d", "d", {}, "OT2022")]
+    assert listing.dates_show(entries[:2], 2022) == []
+    assert listing.dates_show(entries, 2022) == [2023, 2024]
+    assert listing.dates_show(entries[:1] + entries[3:], 2023) == [2022]
+    assert listing.dates_show(entries[3:], 2022) == []
+
+
+def relabeled(fixture, shown, term):
+    """A saved term page whose Term Year label and title are changed from shown to term: a page that names one term and lists another's entries."""
+    return page_bytes(fixture).replace(f"Term Year: {shown}".encode(), f"Term Year: {term}".encode()).replace(f"Term Year {shown}".encode(), f"Term Year {term}".encode())
+
+
+CIRCUIT_22, CIRCUIT_23 = BASE + "orders/ordersbycircuit/22", BASE + "orders/ordersbycircuit/23"
+
+
+def test_listing_rereads_a_term_page_whose_entries_are_another_terms():
+    # On September 27, 2026 a GitHub runner was answered orders/ordersbycircuit/22 with a page that passed shown_terms and listed the 31 orders of October Term 2023. Its bytes were not kept, so the 2023 page relabeled 2022 stands in for it; the re-read is the 2022 page as a home network read it that day.
+    wrong = relabeled("orders_ordersbycircuit_23", 2023, 2022)
+    assert sorted(shown_terms(main_content(parse(wrong)))) == [2022]
+    answers = {CIRCUIT_22: Response(200, wrong), reread_url(CIRCUIT_22): Response(200, page_bytes("orders_ordersbycircuit_22")), CIRCUIT_23: Response(200, page_bytes("orders_ordersbycircuit_23"))}
+    listing = Listing(COLLECTIONS["orders-by-circuit"], Pages(answers), today=TODAY)
+    head, units = listing.list_all()
+    assert listing.pages[CIRCUIT_22] == {"term": 2022, "entries": 32, "reread": [2023], "shown_by": "dates"}
+    assert listing.pages[CIRCUIT_23] == {"term": 2023, "entries": 31}
+    assert head["entries"] == 63 and len(units) == 63 and all(len(unit.entries) == 1 for unit in units.values())
+    assert {(unit.entries[0]["listing"], unit.partition, unit.entries[0]["term"]) for unit in units.values()} == {(CIRCUIT_22, "OT2022", 2022), (CIRCUIT_23, "OT2023", 2023)}
+
+
+@pytest.mark.parametrize("reread", ["redirected", "failed", "another-term"])
+def test_listing_takes_nothing_from_a_term_page_whose_entries_are_another_terms(reread):
+    wrong = relabeled("orders_ordersbycircuit_23", 2023, 2022)
+    again = {"redirected": {}, "failed": {reread_url(CIRCUIT_22): Response(404, b"")}, "another-term": {reread_url(CIRCUIT_22): Response(200, wrong)}}[reread]
+    answers = {CIRCUIT_22: Response(200, wrong), CIRCUIT_23: Response(200, page_bytes("orders_ordersbycircuit_23"))} | again
+    listing = Listing(COLLECTIONS["orders-by-circuit"], Pages(answers), today=TODAY)
+    head, units = listing.list_all()
+    assert listing.pages[CIRCUIT_22] == {"term": 2022, "entries": 0, "shown_term": [2023], "shown_by": "dates"}
+    assert head["entries"] == 31 and {entry["term"] for unit in units.values() for entry in unit.entries} == {2023}
 
 
 def test_reread_url_adds_a_query_string():

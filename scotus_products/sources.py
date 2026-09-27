@@ -8,6 +8,7 @@ Every entry records the listing's own text (markup.field: the rendered text with
 import hashlib
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field as dataclass_field
 from datetime import date
 from urllib.parse import urlsplit
@@ -890,7 +891,7 @@ COLLECTIONS = {c.name: c for c in (
 
 
 class Listing:
-    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty. A term page that shows another term (see shown_terms) is read again at reread_url; where that shows its term, its entries are taken and the page records the terms the plain URL showed as `reread`. Otherwise it lists nothing for its term: its entries are the other term's, so they are not taken, and where the last complete listing found entries on it, pipeline.held_pages holds what they listed."""
+    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty. A term page shows another term where its Term Year label names another (see shown_terms) or where fewer than half of its dated entries fall in its term (see dates_show). Such a page is read again at reread_url; where that shows its term by both, its entries are taken and the page records the terms the plain URL showed as `reread`. Otherwise it lists nothing for its term: its entries are the other term's, so they are not taken, and where the last complete listing found entries on it, pipeline.held_pages holds what they listed. Either record says which check found the other term in `shown_by`, `label` or `dates`."""
 
     def __init__(self, collection, fetcher, today=None):
         self.collection = collection
@@ -906,14 +907,38 @@ class Listing:
             raise ListingError(f"{url} answered {response.status_code}")
         return response.content
 
+    def dates_show(self, entries, term):
+        """The other terms a term page's dated entries fall in (see current_term), where fewer than half of them fall in term; [] otherwise. On September 27, 2026 a GitHub runner was answered orders/ordersbycircuit/22 with a page whose label passed shown_terms and whose 31 entries were the October Term 2023 orders, dated October 2, 2023 to September 6, 2024, where the page read from a home network listed the 32 orders of 2022."""
+        terms = Counter()
+        for uid, url, entry, partition in entries:
+            value = self.collection.typed(Unit(uid, url, partition, [entry]), self.today).get("date")
+            if value:
+                terms[current_term(date.fromisoformat(value))] += 1
+        if terms and terms[term] * 2 < sum(terms.values()):
+            return sorted(other for other in terms if other != term)
+        return []
+
+    def page(self, main, url, term):
+        """(entries, shown, by) for a listing page's main column: its entries, None where its label shows another term, which leaves the page unparsed; the terms it shows in place of term, [] where it shows its own; and the check that found them."""
+        if term is None:
+            return self.collection.parse(main, url, term), [], None
+        shown = sorted(shown_terms(main))
+        if shown and shown != [term]:
+            return None, shown, "label"
+        entries = self.collection.parse(main, url, term)
+        shown = self.dates_show(entries, term)
+        return entries, shown, "dates" if shown else None
+
     def reread(self, url, term):
-        """The main column of the page at reread_url(url), or None where it redirects, fails or does not show term."""
+        """The entries of the page at reread_url(url), taken as url's, or None where it redirects, fails or shows another term by its label or its dates."""
         try:
             data = self.read(reread_url(url))
-            main = None if data is None else main_content(parse(data))
+            if data is None:
+                return None
+            entries, shown, _ = self.page(main_content(parse(data)), url, term)
         except (ListingError, ValueError):
             return None
-        return main if main is not None and sorted(shown_terms(main)) == [term] else None
+        return None if shown else entries
 
     def list_all(self):
         found = []
@@ -928,15 +953,13 @@ class Listing:
                 main = main_content(parse(data))
             except ValueError as error:
                 raise ListingError(f"{url}: {error}") from error
-            shown = sorted(shown_terms(main)) if term is not None else []
-            reread = bool(shown) and shown != [term]
-            if reread:
-                main = self.reread(url, term)
-                if main is None:
-                    self.pages[url] = {"term": term, "entries": 0, "shown_term": shown}
+            entries, shown, by = self.page(main, url, term)
+            if shown:
+                entries = self.reread(url, term)
+                if entries is None:
+                    self.pages[url] = {"term": term, "entries": 0, "shown_term": shown, "shown_by": by}
                     continue
-            entries = self.collection.parse(main, url, term)
-            self.pages[url] = {"term": term, "entries": len(entries)} | ({"reread": shown} if reread else {})
+            self.pages[url] = {"term": term, "entries": len(entries)} | ({"reread": shown, "shown_by": by} if shown else {})
             found += entries
         units = group_units(found)
         head = {"count": len(units), "entries": len(found), "pages": len(self.pages)}

@@ -1,13 +1,14 @@
 """The sync loop against a stand-in site: what is stored, kept, marked, fetched again and refused."""
 
+import json
 import time
 
 import pytest
 
 from conftest import BASE, FakeListing, FakeSite, collection, pdf_bytes, sha256, unit
 from scotus_products.extract import extract_pdf
-from scotus_products.pipeline import MAX_ATTEMPTS, Context, codepoints, sync
-from scotus_products.sources import ListingError
+from scotus_products.pipeline import MAX_ATTEMPTS, Context, codepoints, held_pages, sync
+from scotus_products.sources import ListingError, Unit
 from scotus_products.store import LocalStore
 
 
@@ -150,6 +151,27 @@ def test_a_term_page_that_listed_nothing_may_show_another_term(tmp_path, two_fil
     wrong_empty = {BASE + "test/17": {"term": 2017, "entries": 2}, BASE + "test/26": {"term": 2026, "entries": 0, "shown_term": [2025]}}
     record, store = run(tmp_path, FakeListing(units, pages=wrong_empty), site)
     assert record["finished"] and "held" not in record and store.read_manifest()["listing"]["pages"] == wrong_empty
+
+
+def test_a_page_held_for_its_entries_dates_says_so():
+    base = {"listing": {"pages": {BASE + "test/22": {"term": 2022, "entries": 32}}}}
+    pages = {BASE + "test/22": {"term": 2022, "entries": 0, "shown_term": [2023], "shown_by": "dates"}}
+    assert held_pages(base, pages) == [BASE + "test/22 shows Term Year 2023 by its entries' dates, not 2022, so what the last complete listing found there (32 entries) is left as it is"]
+
+
+def test_the_next_whole_listing_undoes_one_that_took_another_terms_entries(tmp_path, born_digital, scanned):
+    # On September 27, 2026 a run took orders/ordersbycircuit/22 listing the October Term 2023 orders: it delisted the 2022 files, and each 2023 file, now linked from both pages, took term 2022 from its first entry.
+    old, new = unit("orders/22/a.pdf", partition="OT2022", term=2022), unit("orders/23/b.pdf", partition="OT2023", term=2023)
+    site = FakeSite({old.url: born_digital, new.url: scanned})
+    run(tmp_path, FakeListing([old, new]), site)
+    both = Unit(new.id, new.url, "OT2022", [dict(new.entries[0], term=2022, listing=BASE + "test/22"), dict(new.entries[0])])
+    record, _ = run(tmp_path, FakeListing([both]), site)
+    assert record["delisted"] == 1 and rows(tmp_path, "OT2022")[old.id]["listed"] is False and rows(tmp_path, "OT2023")[new.id]["term"] == 2022
+    gets = len(site.gets)
+    record, _ = run(tmp_path, FakeListing([old, new]), site)
+    assert record["relisted"] == 1 and len(site.gets) == gets
+    assert rows(tmp_path, "OT2022")[old.id]["listed"] is True and rows(tmp_path, "OT2022")[old.id]["delisted_at"] is None
+    assert rows(tmp_path, "OT2023")[new.id]["term"] == 2023 and len(json.loads(rows(tmp_path, "OT2023")[new.id]["entries"])) == 1
 
 
 def test_a_mutable_file_is_asked_about_and_fetched_again_only_when_it_changed(tmp_path, born_digital):
