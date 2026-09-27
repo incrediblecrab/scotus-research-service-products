@@ -120,17 +120,36 @@ def test_a_redirected_term_page_may_be_empty(tmp_path, two_files):
     assert record["finished"]
 
 
-def test_a_term_page_that_shows_another_term_stops_the_run_where_it_had_entries(tmp_path, two_files):
+def test_a_term_page_that_shows_another_term_holds_what_it_listed(tmp_path, two_files, born_digital):
+    units, site = two_files
+    good = {BASE + "test/17": {"term": 2017, "entries": 2}, BASE + "test/26": {"term": 2026, "entries": 0}}
+    _, store = run(tmp_path, FakeListing(units, pages=good), site)
+    manifest = store.read_manifest()
+    # The 2017 page shows 2025: its files are not in the listing, and a new file of 2026 is.
+    new = unit("opinions/26pdf/26a1_abcd.pdf", partition="OT2026", term=2026)
+    site.files[new.url] = born_digital
+    wrong = {BASE + "test/17": {"term": 2017, "entries": 0, "shown_term": [2025]}, BASE + "test/26": {"term": 2026, "entries": 1}}
+    record, store = run(tmp_path, FakeListing([new], pages=wrong), site)
+    assert record["finished"] and record["stopped"] is None and record["added"] == 1 and record["delisted"] == 0
+    assert record["held"] == [BASE + "test/17 shows Term Year 2025, not 2017, so what the last complete listing found there (2 entries) is left as it is"]
+    assert all(row["listed"] for row in rows(tmp_path).values()) and len(rows(tmp_path)) == 2 and list(rows(tmp_path, "OT2026")) == [new.id]
+    held = store.read_manifest()
+    assert held["listing"] == manifest["listing"] and held["seen"] == manifest["seen"] and held["partitions"]["OT2023"] == manifest["partitions"]["OT2023"]
+    # A partition the listing still gives files keeps its other rows listed while a page is held.
+    record, _ = run(tmp_path, FakeListing([units[0], new], pages=wrong), site)
+    assert record["delisted"] == 0 and all(row["listed"] for row in rows(tmp_path).values())
+    # Once the page shows its own term again, the run is whole and publishes its listing.
+    fixed = {BASE + "test/17": {"term": 2017, "entries": 2}, BASE + "test/26": {"term": 2026, "entries": 1}}
+    record, store = run(tmp_path, FakeListing(units + [new], pages=fixed), site)
+    assert record["finished"] and "held" not in record and store.read_manifest()["listing"]["pages"] == fixed
+
+
+def test_a_term_page_that_listed_nothing_may_show_another_term(tmp_path, two_files):
     units, site = two_files
     run(tmp_path, FakeListing(units, pages={BASE + "test/17": {"term": 2017, "entries": 2}, BASE + "test/26": {"term": 2026, "entries": 0}}), site)
-    wrong = {BASE + "test/17": {"term": 2017, "entries": 0, "shown_term": [2025]}, BASE + "test/26": {"term": 2026, "entries": 0}}
-    record, _ = run(tmp_path, FakeListing([], pages=wrong), site)
-    assert record["finished"] is False and record["stopped"].startswith("ListingError: " + BASE + "test/17 shows Term Year 2025, not 2017, so it lists nothing; the last complete listing found 2 entries there")
-    assert all(row["listed"] for row in rows(tmp_path).values())
-    # A page that listed nothing before may show another term: nothing is lost by counting it empty.
     wrong_empty = {BASE + "test/17": {"term": 2017, "entries": 2}, BASE + "test/26": {"term": 2026, "entries": 0, "shown_term": [2025]}}
-    record, _ = run(tmp_path, FakeListing(units, pages=wrong_empty), site)
-    assert record["finished"]
+    record, store = run(tmp_path, FakeListing(units, pages=wrong_empty), site)
+    assert record["finished"] and "held" not in record and store.read_manifest()["listing"]["pages"] == wrong_empty
 
 
 def test_a_mutable_file_is_asked_about_and_fetched_again_only_when_it_changed(tmp_path, born_digital):

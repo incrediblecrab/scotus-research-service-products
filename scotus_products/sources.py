@@ -885,7 +885,7 @@ COLLECTIONS = {c.name: c for c in (
 
 
 class Listing:
-    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty. A term page that shows another term (see shown_terms) lists nothing for its term: its entries are the other term's, so they are not taken, and pipeline.check_listing stops the run if the last complete listing found entries on it."""
+    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty. A term page that shows another term (see shown_terms) lists nothing for its term: its entries are the other term's, so they are not taken, and where the last complete listing found entries on it, pipeline.held_pages holds what they listed."""
 
     def __init__(self, collection, fetcher, today=None):
         self.collection = collection

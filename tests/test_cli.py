@@ -60,6 +60,17 @@ def test_a_run_stopped_by_low_disk_exits_1_and_says_why(tmp_path, site, capsys):
     assert json.loads(out.out)["stopped"].startswith("LowDisk") and "stopped: LowDisk" in out.err and site.gets == []
 
 
+def test_a_held_page_is_a_warning_on_actions_and_the_run_succeeds(monkeypatch, tmp_path, capsys):
+    held = "https://www.supremecourt.gov/oral_arguments/argument_audio/2017 shows Term Year 2025, not 2017, so what the last complete listing found there (63 entries) is left as it is"
+    monkeypatch.setattr(cli, "sync", lambda ctx, listing: {"finished": True, "stopped": None, "held": [held], "commits": 1, "fetched": 0})
+    monkeypatch.setattr(cli, "Fetcher", lambda: type("F", (), {"close": lambda self: None})())
+    monkeypatch.setattr(cli, "Listing", lambda collection, fetcher: None)
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: tool)
+    assert main("run", "--dataset", "argument-audio", "--local", str(tmp_path), "--workdir", str(tmp_path)) == 0
+    out = capsys.readouterr()
+    assert f"::warning::argument-audio: {held}" in out.out.splitlines() and "stopped" not in out.err
+
+
 def test_a_card_needs_a_manifest(tmp_path):
     with pytest.raises(SystemExit, match="no manifest.json"):
         main("card", "--dataset", NAME, "--local", str(tmp_path), "--workdir", str(tmp_path))

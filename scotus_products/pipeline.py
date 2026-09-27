@@ -183,12 +183,18 @@ def flush(ctx, manifest, message=None):
 
 
 def check_listing(base, pages):
-    """A term or list page that answered but listed nothing, where the last complete listing found entries on it, is a broken page rather than an emptied one; so is a term page that showed another term."""
+    """A term or list page that answered but listed nothing, where the last complete listing found entries on it, is a broken page rather than an emptied one. A term page that showed another term is held instead (see held_pages)."""
     before = ((base or {}).get("listing") or {}).get("pages") or {}
     for url, page in pages.items():
-        if not page.get("redirected") and page["entries"] == 0 and (before.get(url) or {}).get("entries"):
-            shown = f" shows Term Year {', '.join(map(str, page['shown_term']))}, not {page['term']}, so it" if page.get("shown_term") else ""
-            raise ListingError(f"{url}{shown} lists nothing; the last complete listing found {before[url]['entries']} entries there")
+        if not page.get("redirected") and not page.get("shown_term") and page["entries"] == 0 and (before.get(url) or {}).get("entries"):
+            raise ListingError(f"{url} lists nothing; the last complete listing found {before[url]['entries']} entries there")
+
+
+def held_pages(base, pages):
+    """Term pages that showed another term (sources.shown_terms) where the last complete listing found entries, one message each. Their entries are not in this listing, so the run leaves the rows they listed as they are: it delists nothing, skips the partitions the listing gives no files, and does not publish its listing, so the next run compares its pages with the same complete listing."""
+    before = ((base or {}).get("listing") or {}).get("pages") or {}
+    return [f"{url} shows Term Year {', '.join(map(str, page['shown_term']))}, not {page['term']}, so what the last complete listing found there ({before[url]['entries']} entries) is left as it is"
+            for url, page in sorted(pages.items()) if page.get("shown_term") and (before.get(url) or {}).get("entries")]
 
 
 def sync(ctx, listing):
@@ -202,10 +208,13 @@ def sync(ctx, listing):
         return {"started": started, "ended": utcnow(), "writer": ctx.writer, "finished": False, "stopped": "deferred", "holder": holder, "commits": 0}
     manifest = copy.deepcopy(base)
     manifest.update({key: value for key, value in new_manifest(ctx.collection).items() if key in ("version", "collection", "title", "source", "repo_id")})
-    finished, reason, record = True, None, None
+    finished, reason, record, held = True, None, None, []
     try:
         head, units = listing.list_all()
         check_listing(base, listing.pages)
+        held = held_pages(base, listing.pages)
+        for message in held:
+            log.warning("held: %s", message)
         homes = {uid: key for key, entry in manifest["partitions"].items() for uid in entry.get("ids") or ()}
         partitions = {key: {} for key in manifest["partitions"]}
         for uid, unit in units.items():
@@ -213,12 +222,15 @@ def sync(ctx, listing):
             partitions.setdefault(unit.partition, {})[uid] = unit
         record = {"count": len(units), "entries": head["entries"], "pages": listing.pages, "at": started,
                   "partitions": {key: len(partitions[key]) for key in sorted(partitions)}}
-        manifest["seen"] = {key: record[key] for key in ("count", "entries", "at", "partitions")}
+        if not held:
+            manifest["seen"] = {key: record[key] for key in ("count", "entries", "at", "partitions")}
         with ThreadPoolExecutor(max_workers=max(1, ctx.workers)) as pool:
             for key in order(manifest, partitions):
                 if ctx.only is not None and key not in ctx.only:
                     continue
-                if ctx.out_of_time() or not sync_partition(ctx, pool, manifest, key, partitions[key]):
+                if held and not partitions[key]:
+                    continue
+                if ctx.out_of_time() or not sync_partition(ctx, pool, manifest, key, partitions[key], keep_listed=bool(held)):
                     finished, reason = False, "budget"
                     break
     except Superseded as error:
@@ -231,13 +243,15 @@ def sync(ctx, listing):
         finished, reason = False, f"{type(error).__name__}: {error}"[:300]
         log.exception("run failed")
     run = {"started": started, "ended": utcnow(), "writer": ctx.writer, "finished": finished, "stopped": reason}
+    if held:
+        run["held"] = held
     run.update({key: ctx.stats[key] for key in ("fetched", "added", "replaced", "unchanged", "updated", "checked", "delisted", "relisted", "failed")})
     run["requests"] = sum(ctx.fetcher.requests.values()) - requests_before
     run["bytes_downloaded"] = ctx.fetcher.bytes - bytes_before
     if reason == "superseded":
         return dict(run, commits=ctx.stats["commits"])
     # The listing is published only by a run that brought every partition up to date with it.
-    if finished and ctx.only is None and record:
+    if finished and ctx.only is None and record and not held:
         manifest["listing"] = record
     manifest["runs"] = (base.get("runs") or [])[-(RUNS_KEPT - 1):] + [dict(run, commits=ctx.stats["commits"] + 1)]
     try:
@@ -300,8 +314,8 @@ def changed_on_server(stored, headers):
     return not known or any(old != new for old, new in known)
 
 
-def sync_partition(ctx, pool, manifest, key, units):
-    """Bring one partition up to date. Returns False when the budget ran out first."""
+def sync_partition(ctx, pool, manifest, key, units, keep_listed=False):
+    """Bring one partition up to date. Returns False when the budget ran out first. keep_listed leaves stored rows the listing does not give listed, while a page is held (see held_pages)."""
     entry = manifest["partitions"].get(key) or {}
     failures = manifest["failures"]
     now = utcnow()
@@ -314,11 +328,11 @@ def sync_partition(ctx, pool, manifest, key, units):
     dirty = False
 
     for uid, row in stored.items():
-        if uid not in units and row["listed"]:
+        if uid not in units and row["listed"] and not keep_listed:
             row.update(listed=False, delisted_at=now)
             counts["delisted"] += 1
             dirty = True
-    for uid in [uid for uid, failure in failures.items() if failure.get("partition") == key and uid not in units]:
+    for uid in [uid for uid, failure in failures.items() if failure.get("partition") == key and uid not in units and not keep_listed]:
         del failures[uid]
 
     todo, heads = [], []

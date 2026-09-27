@@ -80,6 +80,9 @@ def cmd_run(args):
                 store.close()
             run.update(collection=name, minutes=round((time.monotonic() - started) / 60, 1), peak_scratch_bytes=store.peak_bytes)
             print(json.dumps(run, indent=1), flush=True)
+            for message in run.get("held") or ():
+                # A workflow command: GitHub shows it on the run's page, and the run still succeeds.
+                print(f"::warning::{name}: {message}", flush=True)
             for key in counts:
                 counts[key] += run.get(key) or 0
             if run["stopped"] == "budget":
