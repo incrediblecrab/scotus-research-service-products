@@ -37,11 +37,14 @@ jobs:
       fetched: ${{ steps.sync.outputs.fetched }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      # A scanned volume of the United States Reports is up to about 160 MB and a partition holds ten; the runner starts with about 14 GB free.
+      # A scanned volume of the United States Reports is up to about 160 MB and a partition holds ten. On September 27, 2026 the runner had a 145 GB disk, and deleting the preinstalled toolchains took 2 to 7 minutes, so they are deleted only when less than 40 GB is free.
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h / "$RUNNER_TEMP"
+          df -h /
+          if [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+            df -h /
+          fi
       # Ubuntu's poppler, not the Homebrew poppler of the local build: each row's extractor column names the version that produced its text.
       - name: Install poppler
         run: |
