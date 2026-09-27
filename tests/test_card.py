@@ -32,7 +32,7 @@ def test_every_collection_renders_a_card_the_hub_can_parse(name):
 @pytest.mark.parametrize("name", list(COLLECTIONS))
 def test_the_license_is_only_claimed_where_it_holds(name):
     meta, body = front_matter(render(new_manifest(COLLECTIONS[name])))
-    if name in ("argument-transcripts", "argument-audio", "speeches", "original-jurisdiction-records-and-briefs"):
+    if name in ("argument-transcripts", "argument-audio", "online-sources-cited-in-opinions", "media-files-cited-in-opinions", "speeches", "original-jurisdiction-records-and-briefs"):
         assert meta["license"] == "unknown" and "license_name" not in meta
         assert LICENSE[name] in body and "makes no claim" in LICENSE[name]
     else:
@@ -223,4 +223,4 @@ def test_a_category_card_has_a_config_only_for_collections_with_rows_and_a_line_
 def test_a_category_card_before_any_run_has_no_configs():
     manifests = {name: new_manifest(c) for name, c in COLLECTIONS.items() if c.category == "opinions"}
     meta, body = front_matter(render_category("opinions", manifests))
-    assert "configs" not in meta and body.count("no run has read the listing yet") == 4
+    assert "configs" not in meta and body.count("no run has read the listing yet") == 6

@@ -262,3 +262,45 @@ def test_argument_audio_is_stored_as_served_with_no_text_and_a_response_that_is_
     row = rows(tmp_path)[audio.id]
     assert record["added"] == 1 and record["failed"] == 1 and broken.id in store.read_manifest()["failures"]
     assert row["file"] == mp3 and row["media_type"] == "audio/mpeg" and row["text_source"] == "no_text" and row["text"] is None and row["pages"] is None
+
+
+def test_video_is_stored_as_served_with_no_text_and_a_response_that_is_not_mp4_is_a_failure(tmp_path):
+    video, broken = unit("media/video/mp4files/scott_v_harris.mp4", document_type="video"), unit("media/video/mp4files/kelly_v_california.mp4", document_type="video")
+    mp4 = bytes.fromhex("00000014667479706d70343200000200") + bytes(400)
+    site = FakeSite({video.url: mp4, broken.url: b"<!DOCTYPE html><html><body>Error</body></html>"})
+    record, store = run(tmp_path, FakeListing([video, broken]), site)
+    row = rows(tmp_path)[video.id]
+    assert record["added"] == 1 and record["failed"] == 1 and broken.id in store.read_manifest()["failures"]
+    assert row["file"] == mp4 and row["media_type"] == "video/mp4" and row["text_source"] == "no_text" and row["text"] is None and row["pages"] is None
+
+
+
+class DeployStampedSite(FakeSite):
+    """Sends a page with only a Last-Modified, the same for every page and every version of it, as www.supremecourt.gov did for two About pages on September 27, 2026."""
+
+    def _response(self, url, body):
+        response = super()._response(url, body)
+        response.headers = {name: value for name, value in response.headers.items() if name not in ("etag", "content-length")}
+        return response
+
+
+def test_a_mutable_page_is_read_again_on_every_run_because_its_headers_cannot_show_an_edit(tmp_path):
+    page = unit("about/justices.aspx", partition="pages", term=None, document_type="html")
+    first = b'<html><body><div id="pagemaindiv"><p>Chief Justice John G. Roberts, Jr.</p></div></body></html>'
+    site = DeployStampedSite({page.url: first})
+    run(tmp_path, FakeListing([page]), site, collection=collection(mutable=True))
+    record, _ = run(tmp_path, FakeListing([page]), site, collection=collection(mutable=True))
+    assert record["unchanged"] == 1 and site.heads == [] and site.gets == [page.url] * 2
+    site.files[page.url] = first.replace(b"</p>", b"</p><p>Associate Justice Clarence Thomas</p>")
+    record, _ = run(tmp_path, FakeListing([page]), site, collection=collection(mutable=True))
+    assert record["replaced"] == 1 and "Associate Justice Clarence Thomas" in rows(tmp_path, "pages")[page.id]["text"]
+
+def test_a_mutable_file_of_no_term_is_asked_about_on_every_run(tmp_path, born_digital):
+    guide = unit("filingandrules/guidetofilingpaidcases.pdf", partition="current", term=None)
+    site = FakeSite({guide.url: born_digital})
+    run(tmp_path, FakeListing([guide]), site, collection=collection(mutable=True))
+    for heads in (1, 2):
+        record, _ = run(tmp_path, FakeListing([guide]), site, collection=collection(mutable=True))
+        assert record["checked"] == 1 and site.heads == [guide.url] * heads
+    record, _ = run(tmp_path, FakeListing([guide]), site, collection=collection())
+    assert record["checked"] == 0 and len(site.heads) == 2, "a collection that is not mutable does not ask"

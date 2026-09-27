@@ -5,7 +5,7 @@ A run reads every listing page of the collection (sources.Listing), which yields
 - fetches units it has never stored, and stores the file with its extracted text (extract.py);
 - rewrites the listing columns (entries, title, date, ...) of a stored unit whose entries changed, without fetching the file again;
 - marks a stored unit the listing no longer shows listed = false with delisted_at, and a returning one listed = true; no row is ever deleted;
-- asks the server (HEAD) whether a stored file changed, and fetches it again if the ETag, Last-Modified or Content-Length moved: on every run for the recent files of a collection marked mutable (calendars, lists and journals, which may be replaced under the same URL), and for every listed stored file when revalidate_all is set. A fetched file whose bytes are what is stored (for HTML: whose rendered text is) keeps the stored row's fetched_at.
+- asks the server (HEAD) whether a stored file changed, and fetches it again if the ETag, Last-Modified or Content-Length moved: on every run for the recent files, and the files of no known term, of a collection marked mutable (calendars, lists and journals, argument audio, the rules, guides and forms, the news-media services sheet, and the About pages, which may be replaced under the same URL), and for every listed stored file when revalidate_all is set. An HTML page is read again instead of asked about, since the site's Last-Modified on a page does not move when the page is edited. A fetched file whose bytes are what is stored (for HTML: whose rendered text is) keeps the stored row's fetched_at.
 
 Files are fetched one at a time on the main thread, paced by http.Fetcher; extraction runs in a thread pool, and results are applied in the order the files were fetched. Staged work is committed every checkpoint_seconds and at the end, so a run that dies loses at most one interval.
 
@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
-from .extract import extract_audio, extract_html, extract_pdf
+from .extract import extract_audio, extract_html, extract_pdf, extract_video
 from .http import Blocked, QuotaExhausted
 from .sources import ListingError, current_term
 from .store import Superseded, dumps
@@ -262,6 +262,8 @@ def extract(ctx, data, unit=None):
     kind = ((unit.entries[0] if unit and unit.entries else {}).get("document_type") or "").lower()
     if kind == "audio":
         return extract_audio(data)
+    if kind == "video":
+        return extract_video(data)
     if ctx.collection.html or kind == "html":
         return extract_html(data)
     return extract_pdf(data, ctx.workdir)
@@ -342,6 +344,10 @@ def sync_partition(ctx, pool, manifest, key, units):
         if ctx.out_of_time():
             break
         row = stored[unit.id]
+        if row["media_type"] == "text/html":
+            # The site's Last-Modified on a page is the time the site was deployed (two About pages sent the same one on September 27, 2026) and it sends no ETag, so a HEAD cannot show an edit: the page is read again and its rendered text compared.
+            todo.append(unit)
+            continue
         try:
             response = ctx.fetcher.head(unit.url)
         except FATAL:

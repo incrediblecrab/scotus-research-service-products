@@ -32,8 +32,8 @@ def test_an_unknown_dataset_is_refused():
     assert stop.value.code == 2
 
 
-def test_all_names_the_twenty_collections_with_argument_audio_last():
-    assert cli.names(argparse.Namespace(dataset="all")) == list(COLLECTIONS) and len(COLLECTIONS) == 20 and list(COLLECTIONS)[-1] == "argument-audio"
+def test_all_names_the_twenty_four_collections_with_argument_audio_last():
+    assert cli.names(argparse.Namespace(dataset="all")) == list(COLLECTIONS) and len(COLLECTIONS) == 24 and list(COLLECTIONS)[-1] == "argument-audio"
 
 
 def test_run_then_verify_then_a_hand_edited_card_fails_until_rewritten(tmp_path, site, capsys):
@@ -135,7 +135,7 @@ def test_a_run_on_actions_names_each_repo_for_trusted_publishing_keeps_a_reserve
     assert main("run", "--dataset", "all", "--total-budget-minutes", "100", "--reserve-minutes", "5") == 0
     capsys.readouterr()
     assert [(name, resource) for name, _, resource, _ in seen] == [(name, f"datasets/{repo}") for name, repo, _, _ in seen]
-    assert {repo for _, repo, _, _ in seen} == {"incrediblecrab/scotus-opinions", "incrediblecrab/scotus-oral-arguments", "incrediblecrab/scotus-case-documents", "incrediblecrab/scotus-news-media", "incrediblecrab/scotus-filing-and-rules"}
+    assert {repo for _, repo, _, _ in seen} == {"incrediblecrab/scotus-opinions", "incrediblecrab/scotus-oral-arguments", "incrediblecrab/scotus-case-documents", "incrediblecrab/scotus-news-media", "incrediblecrab/scotus-filing-and-rules", "incrediblecrab/scotus-about"}
     assert [deadline for *_, deadline in seen] == [1000 + 100 * 60 - (len(seen) - 1 - index) * 5 * 60 for index in range(len(seen))]
     assert output.read_text() == f"more=true\nmore_collections=us-reports\nchanged_collections=orders-by-circuit,journal\ncommits={2 * len(seen)}\nfetched={len(seen)}\n"
     monkeypatch.delenv("GITHUB_ACTIONS")

@@ -2,15 +2,27 @@
 
 Pages from www.supremecourt.gov, saved September 25 and September 27, 2026: gzipped response bodies, each named for its path with `/`, `.` and `-` written as `_`. `test_sources.py` pins each listing page's entry, file and partition counts.
 
-Every page loads Akamai's boomerang script from `s.go-mpulse.net` with the site's beacon key, `window.BOOMR_API_key`, a public value served to every visitor. gitleaks 8.30.1, opening archives (`--max-archive-depth 1`), reports it as a generic API key: 16 findings in 15 files. It is no credential of this project; the pages stay as served. The Orders by Circuit document carries values that change per request, so a fresh copy's bytes may differ, as `sources.py` notes.
+Every page loads Akamai's boomerang script from `s.go-mpulse.net` with the site's beacon key, `window.BOOMR_API_key`, a public value served to every visitor. gitleaks 8.30.1, opening archives (`--max-archive-depth 1`), reports it as a generic API key: 58 findings in 57 files (the Orders by Circuit document holds two). It is no credential of this project; the pages stay as served. The Orders by Circuit document carries values that change per request, so a fresh copy's bytes may differ, as `sources.py` notes.
 
 | File | Page |
 |---|---|
+| `about_buildingregulations_aspx.html.gz` | https://www.supremecourt.gov/about/buildingregulations.aspx |
+| `about_code_of_conduct_for_justices_aspx.html.gz` | https://www.supremecourt.gov/about/code-of-conduct-for-justices.aspx |
+| `about_courtatwork_aspx.html.gz` | https://www.supremecourt.gov/about/courtatwork.aspx |
+| `about_courtbuilding_aspx.html.gz` | https://www.supremecourt.gov/about/courtbuilding.aspx |
+| `about_faq_aspx.html.gz` | https://www.supremecourt.gov/about/faq.aspx |
+| `about_faq_documents_aspx.html.gz` | https://www.supremecourt.gov/about/faq_documents.aspx |
+| `about_faq_general_aspx.html.gz` | https://www.supremecourt.gov/about/faq_general.aspx |
+| `about_faq_justices_aspx.html.gz` | https://www.supremecourt.gov/about/faq_justices.aspx |
+| `about_historyandtraditions_aspx.html.gz` | https://www.supremecourt.gov/about/historyandtraditions.aspx |
+| `about_justices_aspx.html.gz` | https://www.supremecourt.gov/about/justices.aspx |
 | `casedocuments_original_jurisdiction_cases_aspx.html.gz` | https://www.supremecourt.gov/casedocuments/original_jurisdiction_cases.aspx |
 | `ctrules_scannedrules_aspx.html.gz` | https://www.supremecourt.gov/ctrules/scannedrules.aspx |
 | `filingandrules_electronicfiling_aspx.html.gz` | https://www.supremecourt.gov/filingandrules/electronicfiling.aspx |
 | `filingandrules_rules_guidance_aspx.html.gz` | https://www.supremecourt.gov/filingandrules/rules_guidance.aspx |
 | `filingandrules_supremecourtbar_aspx.html.gz` | https://www.supremecourt.gov/filingandrules/supremecourtbar.aspx |
+| `media_media_aspx.html.gz` | https://www.supremecourt.gov/media/media.aspx |
+| `opinions_cited_urls_05.html.gz` through `opinions_cited_urls_25.html.gz` | https://www.supremecourt.gov/opinions/cited_urls/05 through https://www.supremecourt.gov/opinions/cited_urls/25 |
 | `opinions_in_chambers_aspx.html.gz` | https://www.supremecourt.gov/opinions/in-chambers.aspx |
 | `opinions_relatingtoorders_25.html.gz` | https://www.supremecourt.gov/opinions/relatingtoorders/25 |
 | `opinions_slipopinion_18.html.gz` | https://www.supremecourt.gov/opinions/slipopinion/18 |

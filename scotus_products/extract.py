@@ -228,3 +228,25 @@ def extract_audio(data):
         "pdf_info": None,
         "notes": [],
     }
+
+
+def extract_video(data):
+    """An MP4 row stores the video bytes verbatim and no text. The file must open with an ISO base media box whose type is `ftyp` (bytes 4 to 8), as all nine MP4s the Court's media page linked on September 27, 2026 did."""
+    if data[4:8] != b"ftyp":
+        raise ValueError(f"the response does not look like an MP4 file: {data[:12]!r}")
+    return {
+        "media_type": "video/mp4",
+        "pages": None,
+        "image_pages": None,
+        "ocr_pages": None,
+        "text_source": "no_text",
+        "text": None,
+        "ocr_text": None,
+        "extractor": "no text extracted",
+        "xcheck_extractor": None,
+        "xcheck_equal": None,
+        "xcheck_equal_nfkd": None,
+        "xcheck_delta": None,
+        "pdf_info": None,
+        "notes": [],
+    }

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pyarrow.compute as pc
 
-from .extract import extract_html, nonspace, pdftotext
+from .extract import extract_audio, extract_html, extract_video, nonspace, pdftotext
 from .pipeline import MAX_ATTEMPTS
 from .store import partition_path
 
@@ -20,6 +20,8 @@ TEXT_SOURCES = {"born_digital", "scanned", "mixed", "no_text", "html"}
 # text is only born-digital (or HTML) text, ocr_text only OCR.
 TEXT_ONLY = {"born_digital", "html"}
 OCR_ONLY = {"scanned", "mixed"}
+# Files stored as served, with no text: a fresh check of the bytes must accept them as what their row says they are.
+STORED_AS_SERVED = {"audio/mpeg": extract_audio, "video/mp4": extract_video}
 
 
 def verify(store, listing=None, deep=False, redownload=0, fetcher=None, workers=6, workdir=None, seed=None):
@@ -136,7 +138,14 @@ def _check_row(row, workdir):
         if extract_html(data)["text"] != row["text"]:
             found.append(f"{row['id']}: rendering the stored page again gives other text")
         return found
-    if row["media_type"] == "audio/mpeg":
+    if row["media_type"] in STORED_AS_SERVED:
+        try:
+            fresh = STORED_AS_SERVED[row["media_type"]](data)
+        except ValueError as error:
+            found.append(f"{row['id']}: {error}")
+        else:
+            if any(fresh[k] != row[k] for k in ("text_source", "text", "ocr_text", "pages")):
+                found.append(f"{row['id']}: checking the stored file again gives other fields")
         return found
     with tempfile.TemporaryDirectory(dir=workdir) as scratch:
         path = Path(scratch) / "document.pdf"

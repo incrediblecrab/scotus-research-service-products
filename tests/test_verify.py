@@ -1,5 +1,6 @@
 """verify() against a dataset built by the pipeline, then tampered with one defect at a time: each check must catch its defect and only that check."""
 
+import hashlib
 import time
 
 import pytest
@@ -91,6 +92,38 @@ def test_ocr_text_that_differs_from_the_file_is_caught_by_the_deep_check(dataset
     tamper(root, lambda rows: row(rows, FILING).update(ocr_text=row(rows, FILING)["ocr_text"].replace("WISCONSIN", "WISCONSLN")))
     assert check(root, deep=True)["problems"] == [f"{FILING}: extracting the stored file again gives other text"]
 
+
+
+AUDIO, VIDEO = "media/audio/mp3files/25-466.mp3", "media/video/mp4files/scott_v_harris.mp4"
+
+
+@pytest.fixture
+def media(tmp_path):
+    units = [unit(AUDIO, document_type="audio"), unit(VIDEO, document_type="video")]
+    site = FakeSite({units[0].url: b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90\x64" + bytes(400), units[1].url: bytes.fromhex("00000014667479706d70343200000200") + bytes(400)})
+    store = LocalStore(tmp_path)
+    sync(Context(store=store, collection=collection(), fetcher=site, deadline=time.monotonic() + 600, workers=2), FakeListing(units))
+    store.close()
+    return tmp_path
+
+
+def test_audio_and_video_whose_bytes_are_no_longer_audio_or_video_are_caught_by_the_deep_check_only(media):
+    assert check(media, deep=True)["deep"] == {"rows_checked": 2, "rows_with_problems": 0}
+    page = b"<!DOCTYPE html><html><body>Error</body></html>"
+
+    def swap(rows):
+        for uid in (AUDIO, VIDEO):
+            row(rows, uid).update(file=page, file_sha256=hashlib.sha256(page).hexdigest(), file_size=len(page))
+
+    tamper(media, swap)
+    assert check(media)["problems"] == []
+    problems = check(media, deep=True)["problems"]
+    assert len(problems) == 2 and problems[0].startswith(f"{AUDIO}: the response does not look like MP3 audio") and problems[1].startswith(f"{VIDEO}: the response does not look like an MP4 file")
+
+
+def test_a_video_row_that_claims_text_is_caught_by_the_deep_check(media):
+    tamper(media, lambda rows: row(rows, VIDEO).update(text_source="born_digital", text="Officer Scott", extractor="pdftotext"))
+    assert f"{VIDEO}: checking the stored file again gives other fields" in check(media, deep=True)["problems"]
 
 def test_bytes_that_do_not_match_their_hash_are_caught(dataset):
     root, _, _ = dataset

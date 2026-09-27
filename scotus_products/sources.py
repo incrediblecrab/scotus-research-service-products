@@ -26,7 +26,7 @@ FIRST_TERM = {
 }
 # Transcripts of the October Terms 1968-1999 are listed on archived_transcripts/{term} pages; 1967 and 2000 redirect (measured September 25, 2026).
 ARCHIVED_TRANSCRIPTS = range(1968, 2000)
-# PDFs the site links from every listing (press and reporter guides), which belong to no collection.
+# Public-information PDFs that the older document-listing parsers should not sweep up implicitly; dedicated News Media collections include the ones that are in scope.
 NOT_LISTED = ("publicinfo/",)
 _DATE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4}|\d{2})$")
 _TERM = re.compile(r"October Term (\d{4})")
@@ -182,6 +182,7 @@ CATEGORIES = {
     "oral-arguments": ("Oral Arguments", f"{BASE}/oral_arguments/oral_arguments.aspx"),
     "case-documents": ("Case Documents", f"{BASE}/case_documents.aspx"),
     "news-media": ("News Media", f"{BASE}/publicinfo/publicinfo.aspx"),
+    "about": ("About", f"{BASE}/about/justices.aspx"),
 }
 
 
@@ -199,7 +200,7 @@ class Collection:
     parse: object
     typed: object
     partition_label: str = "October Term"
-    # Every run asks the server whether the collection's recent files changed: set for calendars, lists and journals, which may be replaced under the same URL.
+    # Every run asks the server whether the collection's recent files changed, and every file of no known term: set for calendars, lists and journals, argument audio, the rules, guides and forms, the news-media services sheet, and the About pages, which may be replaced under the same URL.
     mutable: bool = False
     # The documents are HTML pages rather than PDFs.
     html: bool = False
@@ -233,6 +234,8 @@ def media_kind(uid):
         return "pdf"
     if path.endswith(".mp3"):
         return "audio"
+    if path.endswith(".mp4"):
+        return "video"
     return "html"
 
 
@@ -493,15 +496,95 @@ def typed_year_document(unit, today=None):
     return {"term": None, "date": long_date(entry.get("link_text")), "docket": None, "title": entry.get("link_text") or None}
 
 
+def cited_url_pages(today):
+    return [(f"{BASE}/opinions/cited_urls/{term % 100:02d}", term) for term in range(2005, current_term(today) + 1)]
+
+
+def parse_online_sources(main, page_url, term):
+    found = []
+    for uid, url, entry in scan(main, page_url, is_doc=lambda uid: uid.startswith("opinions/urls_cited/") and uid.endswith(".pdf"), skip=()):
+        if entry.get("row") is None:
+            raise ListingError(f"{page_url}: a cited URL file link outside a table: {entry['href']}")
+        entry["term"] = term
+        entry["document_type"] = "pdf"
+        found.append((uid, url, entry, f"OT{term}"))
+    return found
+
+
+def typed_online_source(unit, today=None):
+    entry = unit.entries[0]
+    row = entry.get("row") or {}
+    return {"term": entry.get("term"), "date": None, "docket": row.get("Case Number") or None, "title": entry.get("link_text") or None}
+
+
+def row_with_date(anchor):
+    node = anchor
+    while node is not None:
+        if isinstance(node.tag, str) and node.tag.lower() == "tr":
+            cells = [field(cell) for cell in node.xpath("./td|./th")]
+            if cells and iso_date(cells[0]):
+                headers = ("Date", "Docket", "Media File", "File Size")
+                return dict(zip(headers, cells[:len(headers)]))
+        node = node.getparent()
+    return None
+
+
+def parse_media_files(main, page_url, term):
+    found = []
+    for element in main.xpath('.//a[@href]'):
+        href = element.get("href")
+        if not href or href.startswith(("#", "mailto:", "javascript:")):
+            continue
+        uid, url, page = resolve(page_url, href)
+        if not (url.startswith(BASE + "/") and uid.startswith("media/") and uid.endswith((".mp3", ".mp4"))):
+            continue
+        entry = {"listing": page_url, "href": href, "link_text": field(element), "document_type": media_kind(uid)}
+        row = row_with_date(element)
+        if row is not None:
+            entry["row"] = row
+        line = line_of(element)
+        if line and line != entry["link_text"]:
+            entry["line"] = line
+        if page is not None:
+            entry["page"] = page
+        media_date = iso_date((row or {}).get("Date"))
+        entry_term = current_term(date.fromisoformat(media_date)) if media_date else None
+        if entry_term:
+            entry["term"] = entry_term
+        found.append((uid, url, entry, f"OT{entry_term}" if entry_term else "undated"))
+    return found
+
+
+def typed_media_file(unit, today=None):
+    entry = unit.entries[0]
+    row = entry.get("row") or {}
+    media = row.get("Media File") or entry.get("line") or entry.get("link_text")
+    title = media.rsplit(" - ", 1)[0] if media else None
+    return {"term": entry.get("term"), "date": iso_date(row.get("Date"), today), "docket": row.get("Docket") or None, "title": title}
+
+
 def typed_single_document(unit, today=None):
     entry = unit.entries[0]
-    title = "A Reporter's Guide to Applications" if unit.id == "publicinfo/reportersguide.pdf" else entry.get("link_text")
+    titles = {"publicinfo/reportersguide.pdf": "A Reporter's Guide to Applications", "publicinfo/pioservices.pdf": "Services for News Media"}
+    title = titles.get(unit.id, entry.get("link_text"))
     return {"term": None, "date": None, "docket": None, "title": title or None}
 
 
 def parse_reporters_guide(main, page_url, term):
     url = f"{BASE}/publicinfo/reportersguide.pdf"
     return [("publicinfo/reportersguide.pdf", url, {"listing": page_url, "href": "reportersguide.pdf", "link_text": "News Media", "document_type": "pdf"}, "all")]
+
+
+def parse_publicinfo_pdf(target_uid, title):
+    def parser(main, page_url, term):
+        found = []
+        for uid, url, entry in scan(main, page_url, is_doc=lambda uid: uid == target_uid, skip=()):
+            entry["document_type"] = "pdf"
+            found.append((uid, url, entry, "all"))
+        if not found:
+            raise ListingError(f"{page_url}: no link to {title}")
+        return found
+    return parser
 
 
 def parse_filing_documents(main, page_url, term):
@@ -524,6 +607,44 @@ def parse_filing_documents(main, page_url, term):
 
 def typed_filing_document(unit, today=None):
     """The year a filing document's link names (an edition of the Rules, a revision) is no October Term, and its dates are effective or revision dates rather than one date of the document, so term and date stay null."""
+    entry = unit.entries[0]
+    return {"term": None, "date": None, "docket": None, "title": entry.get("link_text") or None}
+
+
+ABOUT_PAGES = {
+    f"{BASE}/about/justices.aspx": "Justices",
+    f"{BASE}/about/courtatwork.aspx": "The Supreme Court at Work",
+    f"{BASE}/about/code-of-conduct-for-justices.aspx": "Code of Conduct for Justices",
+    f"{BASE}/about/historyandtraditions.aspx": "History and Traditions",
+    f"{BASE}/about/courtbuilding.aspx": "The Supreme Court Building",
+    f"{BASE}/about/buildingregulations.aspx": "Building Regulations",
+    f"{BASE}/about/faq.aspx": "Frequently Asked Questions",
+    f"{BASE}/about/faq_justices.aspx": "Frequently Asked Questions: Supreme Court Justices",
+    f"{BASE}/about/faq_general.aspx": "Frequently Asked Questions: General Information",
+    f"{BASE}/about/faq_documents.aspx": "Frequently Asked Questions: Locating Court Documents and Information",
+}
+
+
+def about_pages(today):
+    return [(url, None) for url in ABOUT_PAGES]
+
+
+def parse_about_documents(main, page_url, term):
+    uid, url, _ = resolve(page_url, page_url)
+    found = [(uid, url, {"listing": page_url, "href": page_url, "link_text": ABOUT_PAGES.get(page_url) or field(main), "document_type": "html"}, "pages")]
+    for link_uid, link_url, entry in scan(main, page_url, is_doc=is_document, skip=()):
+        if not link_url.startswith(BASE + "/") or link_uid == uid:
+            continue
+        if link_uid in {"about/faq_visiting.aspx", "filingandrules/faq_electronicfiling.aspx", ""}:
+            continue
+        if not (link_uid.startswith("about/") and (link_uid.endswith(".pdf") or link_uid.endswith(".aspx"))):
+            continue
+        entry["document_type"] = media_kind(link_uid)
+        found.append((link_uid, link_url, entry, "pdfs" if link_uid.endswith(".pdf") else "pages"))
+    return found
+
+
+def typed_about_document(unit, today=None):
     entry = unit.entries[0]
     return {"term": None, "date": None, "docket": None, "title": entry.get("link_text") or None}
 
@@ -603,6 +724,24 @@ COLLECTIONS = {c.name: c for c in (
             "The Court's page says: \"PDFs of partial volumes made available for the convenience of the bench and bar, as well as page proofs of volumes not yet published by GPO, will be posted bearing a “page proof” watermark.\"",
             LIGATURES,
             "Measured September 26, 2026: 13 bound volumes from 529 to 544 set some signs in a font that names its glyphs H and a number, such as H11503, and gives no Unicode value for them, and pdftotext takes the number for a code point, so `text` has 218 characters from blocks such as CJK and Coptic that the volumes do not use. Page 596 of the file of volume 541 prints \"1.5%×2×$2,000=$60\", and `text` has \"1.5%⳯2⳯$2,000⳱$60\"; its page 1097 prints two empty check boxes, and `text` has 䡺 for each. For all 218, the file holds a glyph named H and the character's code point in decimal; pypdf prints the glyph's name instead (/H11033).",
+        ),
+        category="opinions",
+    ),
+    Collection(
+        "online-sources-cited-in-opinions", "Online Sources Cited in Opinions", f"{BASE}/opinions/urls_cited.aspx",
+        cited_url_pages, parse_online_sources, typed_online_source,
+        notes=(
+            "The Court's page says: \"Because some URLs cited in the Court’s opinions may change over time or disappear altogether, an attempt is made to capture in PDF format the material cited in an opinion.\" This collection stores only those Court-hosted PDF captures under `/opinions/URLs_Cited/`; the outside URLs themselves are kept as listing text in `entries.link_text` and are not fetched.",
+            "Read from the listing pages on September 27, 2026: the October Terms 2005 to 2024 link 1,223 Court-hosted PDFs 1,234 times, as one capture can be listed under more than one case, and the October Term 2025 page lists none yet.",
+        ),
+        category="opinions",
+    ),
+    Collection(
+        "media-files-cited-in-opinions", "Media Files Cited in Opinions", f"{BASE}/media/media.aspx",
+        single(f"{BASE}/media/media.aspx"), parse_media_files, typed_media_file,
+        notes=(
+            "The Court's page says: \"On occasion, an opinion may cite to a media file, e.g., a video or audio file that is part of the record in the lower court. Those files are posted here.\" This collection stores only Court-hosted files linked by the page; it does not follow any outside source.",
+            "On September 27, 2026 the page linked 10 files: 9 MP4 videos and 1 MP3 recording. Audio and video rows store the bytes in `file` and have `text_source` = `no_text`; a response that does not open as MP3 audio or as an MP4 file (an `ftyp` box) is a failure, not a row.",
         ),
         category="opinions",
     ),
@@ -693,27 +832,42 @@ COLLECTIONS = {c.name: c for c in (
     ),
     Collection(
         "reporters-guide-to-applications", "A Reporter's Guide to Applications", f"{BASE}/publicinfo/publicinfo.aspx",
-        single(f"{BASE}/publicinfo/publicinfo.aspx"), parse_reporters_guide, typed_single_document,
-        notes=("The footer links A Reporter's Guide to Applications as a single PDF. Services for News Media is excluded because it is a service description page, and Press Credentials is excluded because it is a credentials process.",),
+        single(f"{BASE}/publicinfo/publicinfo.aspx"), parse_reporters_guide, typed_single_document, mutable=True,
+        notes=("The footer links A Reporter's Guide to Applications as a single PDF. Press Credentials is excluded because it is a credentials process.",),
+        category="news-media",
+    ),
+    Collection(
+        "services-for-news-media", "Services for News Media", f"{BASE}/publicinfo/publicinfo.aspx",
+        single(f"{BASE}/publicinfo/publicinfo.aspx"), parse_publicinfo_pdf("publicinfo/pioservices.pdf", "Services for News Media"), typed_single_document, mutable=True,
+        notes=("The News Media landing page links Services for News Media as a single PDF: the Public Information Office's account of its services to the press, such as its pressroom, the argument calendar, argument audio, and briefs and petitions. The Court revises it under the same address (the copy read on September 27, 2026 names the 2025 Term calendar), so every run asks the server whether it changed.",),
         category="news-media",
     ),
     Collection(
         "rules-and-guidance", "Rules and Guidance", f"{BASE}/filingandrules/rules_guidance.aspx",
-        single(f"{BASE}/filingandrules/rules_guidance.aspx", f"{BASE}/ctrules/scannedrules.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current",
+        single(f"{BASE}/filingandrules/rules_guidance.aspx", f"{BASE}/ctrules/scannedrules.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current", mutable=True,
         notes=("The collection stores documents linked from Rules and Guidance, including the historical Rules PDFs linked by the Historical Rules page that Rules and Guidance names. External filing-system links, the case citation tool and service pages are not followed.",),
         category="filing-and-rules",
     ),
     Collection(
         "electronic-filing-documents", "Electronic Filing Documents", f"{BASE}/filingandrules/electronicfiling.aspx",
-        single(f"{BASE}/filingandrules/electronicfiling.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current",
+        single(f"{BASE}/filingandrules/electronicfiling.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current", mutable=True,
         notes=("The collection stores PDF and HTML documents linked by the Electronic Filing page. The external electronic filing system itself is excluded because it is a service outside www.supremecourt.gov, and interactive eLearning tutorials are excluded because they are training applications rather than document files.",),
         category="filing-and-rules",
     ),
     Collection(
         "supreme-court-bar-documents", "Supreme Court Bar Documents", f"{BASE}/filingandrules/supremecourtbar.aspx",
-        single(f"{BASE}/filingandrules/supremecourtbar.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current",
+        single(f"{BASE}/filingandrules/supremecourtbar.aspx"), parse_filing_documents, typed_filing_document, partition_label="year or current", mutable=True,
         notes=("The collection stores the bar admissions form and admissions instructions linked by the Supreme Court Bar page. It does not submit or automate bar admission services.",),
         category="filing-and-rules",
+    ),
+    Collection(
+        "about-the-court", "About the Court", f"{BASE}/about/justices.aspx",
+        about_pages, parse_about_documents, typed_about_document, partition_label="document kind", mutable=True,
+        notes=(
+            "The collection stores the About-column pages for Justices, Supreme Court at Work, Code of Conduct for Justices, History and Traditions, The Supreme Court Building, Building Regulations and Frequently Asked Questions, plus same-site `/about/` HTML or PDF documents those pages link directly. The Visiting the Court FAQ and the Supreme Court Electronic Filing System FAQ are excluded because Visit is visitor logistics and electronic filing belongs to Filing & Rules. The Court edits these pages in place, so every run reads each stored page again and asks the server whether each stored PDF changed. A HEAD request cannot show that a page was edited: on September 27, 2026 three of the pages sent no ETag or Content-Length, and two of them (Justices and The Supreme Court Building) sent the same Last-Modified, October 24, 2025, 22:22:55 GMT, which looks like the time the site was deployed. A page whose rendered text is unchanged keeps its stored row.",
+            "Rows store each page's HTML, not the images it shows: the photographs and icons the pages reference sit under `/images/`, which robots.txt disallows, and are not fetched.",
+        ),
+        category="about",
     ),
     Collection(
         "argument-audio", "Argument Audio", f"{BASE}/oral_arguments/argument_audio/",

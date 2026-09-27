@@ -5,7 +5,7 @@ import pytest
 
 from conftest import FIXTURES, page_bytes, pdf_bytes
 from scotus_products import extract
-from scotus_products.extract import NotAPdf, classify, compare, extract_audio, extract_html, extract_pdf
+from scotus_products.extract import NotAPdf, classify, compare, extract_audio, extract_html, extract_pdf, extract_video
 
 
 def pdftotext_raw(name):
@@ -99,3 +99,16 @@ def test_audio_is_recognized_by_an_id3_tag_or_an_mpeg_frame_sync(head):
 def test_a_response_that_is_not_audio_is_refused(data):
     with pytest.raises(ValueError):
         extract_audio(data)
+
+
+@pytest.mark.parametrize("head", [bytes.fromhex("00000018667479706d70343200000000"), bytes.fromhex("00000014667479706d70343200000200")], ids=["box-24", "box-20"])
+def test_video_is_recognized_by_its_ftyp_box_and_gets_no_text(head):
+    # The two openings the Court's nine MP4s had when read on September 27, 2026.
+    row = extract_video(head + bytes(64))
+    assert row["media_type"] == "video/mp4" and row["text_source"] == "no_text" and row["text"] is None and row["ocr_text"] is None and row["pages"] is None
+
+
+@pytest.mark.parametrize("data", [b"<!DOCTYPE html><html><body>Error</body></html>", b"ID3\x03\x00" + bytes(16), b"%PDF-1.6", b""], ids=["html", "mp3", "pdf", "empty"])
+def test_a_response_that_is_not_mp4_is_refused(data):
+    with pytest.raises(ValueError):
+        extract_video(data)
