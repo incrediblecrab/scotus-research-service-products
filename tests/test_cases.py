@@ -224,20 +224,23 @@ def test_granted_list_titles_stop_at_field_labels_and_rank_last():
     cases.add_granted_list(found, 2010, {"id": "orders/10grantednotedlist.pdf", "text": text})
     assert {docket: list(case["listed_titles"]) for (_, docket), case in found.items()} == {"137, Orig.": ["MONTANA V. WYOMING AND NORTH DAKOTA"], "08-1314": ["WILLIAMSON V. MAZDA MOTOR OF AMERICA, INC."], "141, Orig.": ["TEXAS V. NEW MEXICO"]}
     cases.add_source(found, 2010, "08-1314", {"id": "t.pdf", "title": "Williamson v. Mazda Motor of America, Inc."}, "argument-transcripts")
+    # The Reports' captions are in capitals too, however many volumes print the case.
+    for volume in ("561bv.pdf", "562bv.pdf"):
+        cases.add_source(found, 2010, "08-1314", {"id": volume}, "us-reports", {"id": volume, "date": "2011-02-23", "title": "WILLIAMSON et al. v. MAZDA MOTOR OF AMERICA, INC., et al."})
     rows = {row["docket"]: row for row in cases.assemble_rows(2010, found, {}, {})}
     assert rows["08-1314"]["case_name"] == "Williamson v. Mazda Motor of America, Inc." and rows["137, Orig."]["case_name"] == "MONTANA V. WYOMING AND NORTH DAKOTA"
     # A docket no run has asked about has neither a page nor an answer.
     assert rows["137, Orig."]["docket_found"] is None and rows["137, Orig."]["docket_url"] is None
 
 
-def write_sources(base, collection, partitions):
+def write_sources(base, collection, partitions, terms=None):
     root = cases.source_root(base, collection)
     manifest = {"collection": collection, "partitions": {}}
     for key, rows in partitions.items():
         path = root / "data" / f"{key}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist([{name: row.get(name) for name in cases.SOURCE_COLUMNS} for row in rows], schema=SOURCE_SCHEMA), path)
-        manifest["partitions"][key] = {"file": f"data/{key}.parquet", "sha256": sha256_file(path), "rows": len(rows)}
+        manifest["partitions"][key] = {"file": f"data/{key}.parquet", "sha256": sha256_file(path), "rows": len(rows)} | ({"terms": terms[key]} if terms and key in terms else {})
     root.mkdir(parents=True, exist_ok=True)
     (root / MANIFEST).write_text(json.dumps(manifest))
 
@@ -272,7 +275,7 @@ def test_a_file_of_several_opinions_gives_each_case_its_own_pages(tmp_path):
     slip = {"id": "opinions/19pdf/19-1_abcd.pdf", "partition": "OT2019", "url": "https://www.supremecourt.gov/opinions/19pdf/19-1_abcd.pdf", "term": 2019, "date": "2020-03-02", "docket": "19-1, 19-2", "title": "E v. F", "text_source": "born_digital", "text": "slip\fopinion\f", "entries": json.dumps([{"href": "/opinions/19pdf/19-1_abcd.pdf", "page": None, "row": {"Docket": "19-1, 19-2", "Name": "E v. F", "Date": "3/2/20", "Citation": "590 U.S. 1"}}] * 2)}
     write_sources(tmp_path, "opinions-of-the-court", {"OT2019": [court, slip]})
     write_sources(tmp_path, "opinions-relating-to-orders", {"OT2019": [orders]})
-    for collection in ("in-chambers-opinions", "argument-transcripts", "granted-noted-cases-list"):
+    for collection in ("in-chambers-opinions", "argument-transcripts", "granted-noted-cases-list", "us-reports"):
         write_sources(tmp_path, collection, {})
     args = SimpleNamespace(sources_local=str(tmp_path))
     built = cases.build_cases_from_sources(args, cases.source_manifests(args), [], 2019)
@@ -306,6 +309,123 @@ def test_a_page_of_orders_or_of_another_part_ends_an_opinion():
         assert not cases.ends_opinion(page), page
 
 
+def reports_row(file_id, term, printed, field="text"):
+    return {"id": file_id, "partition": "volumes-570-579", "url": "https://www.supremecourt.gov/" + file_id, "term": term, "title": f"Volume (Term {term})", "text_source": "born_digital" if field == "text" else "mixed", field: "".join(page + "\f" for page in printed)}
+
+
+def other_sources(base, **partitions):
+    for collection in ("opinions-of-the-court", "opinions-relating-to-orders", "in-chambers-opinions", "argument-transcripts", "granted-noted-cases-list"):
+        write_sources(base, collection, partitions.get(collection.replace("-", "_"), {}))
+
+
+def test_a_bound_volume_gives_each_case_its_pages_where_no_listing_gives_its_opinion(tmp_path):
+    slug = "572US1 Unit: $U10 [09-11-17 14:00:00] PAGES PGT: OPIN\n"
+    printed = [
+        slug + "CASES ADJUDGED\nIN THE\nSUPREME COURT OF THE UNITED STATES\nAT\nOCTOBER TERM, 2013\nLOZANO v. MONTOYA ALVAREZ\ncertiorari to the united states court of appeals for\nthe second circuit\nNo. 12–820. Argued December 11, 2013—Decided March 5, 2014\nWhen one parent abducts a child",
+        slug + "2 LOZANO v. MONTOYA ALVAREZ\nOpinion of the Court\nIt is so ordered.",
+        slug + "OCTOBER TERM, 2013 3\nSyllabus\nENVIRONMENTAL PROTECTION AGENCY et al. v.\nEME HOMER CITY GENERATION, L. P., et al.\ncertiorari to the united states court of appeals for\nthe district of columbia circuit\nNo. 12–1182. Argued December 10, 2013—Decided April 29, 2014*\nThe Clean Air Act\n*Together with No. 12–1183, American Lung Association et al. v. EME Homer City Generation, L. P., et al., also on certiorari to the same court.",
+        slug + "4 EPA v. EME HOMER CITY GENERATION, L. P.\nOpinion of the Court\ntext",
+        slug + "Cite as: 572 U. S. 3 (2014) 5\nScalia, J., dissenting\nI dissent.",
+        slug + "OCTOBER TERM, 2013 6\nSyllabus\nNATIONAL LABOR RELATIONS BOARD v. NOEL CANNING et al.\ncertiorari to the united states court of appeals for\nthe district of columbia circuit\nNo. 12–1281. Argued January 13, 2014—Decided June 26, 2014\ntext",
+        slug + "SMITH v. JONES 7\nPer Curiam\nSMITH v. JONES\nonpetitionfor writ of certiorari to the supreme court of ohio\nNo. 13–551. Decided May 5, 2014\nPer Curiam.",
+        "Job: 572ORD Take: NOT1 Date/Time: 08-05-17 12:26:58\nReporter’s Note\nThe next page is purposely numbered 801.",
+        slug + "ORDERS FOR OCTOBER 7, 2013, THROUGH\nJUNE 30, 2014",
+        slug + "802 OCTOBER TERM, 2013\nOctober 7, 2013 572 U. S.\nNo. 13–5. Doe v. Roe. Motion for leave to file granted. Argued and Decided below.",
+        slug + "OPINION OF INDIVIDUAL JUSTICE\nIN CHAMBERS\nTEVA PHARMACEUTICALS USA, INC., et al. v.\nSANDOZ, INC., et al.\non application to recall and stay mandate\nNo. 13A1003 (13–854). Decided April 18, 2014\nChief Justice Roberts, Circuit Justice.",
+        slug + "1302 TEVA PHARMACEUTICALS USA, INC. v. SANDOZ, INC.\nOpinion in Chambers\nIt is so ordered.",
+        "I N D E X\nABANDONMENT OF PROPERTY RIGHTS.",
+    ]
+    volume = reports_row("opinions/boundvolumes/572bv.pdf", 2013, printed)
+    earlier = reports_row("opinions/boundvolumes/570bv.pdf", 2012, printed[:2])
+    canning = {"id": "opinions/13pdf/12-1281_mc8a.pdf", "partition": "OT2013", "url": "u", "term": 2013, "date": "2014-06-26", "docket": "12-1281", "title": "NLRB v. Noel Canning", "text_source": "born_digital", "text": "slip opinion\f"}
+    per_curiam = {"id": "opinions/13pdf/13-551_a.pdf", "partition": "OT2013", "url": "u", "term": 2013, "date": "2014-05-05", "docket": "13-551", "title": "Smith v. Jones", "text_source": "born_digital", "text": "slip per curiam\f"}
+    other_sources(tmp_path, opinions_of_the_court={"OT2013": [canning]}, opinions_relating_to_orders={"OT2013": [per_curiam]})
+    write_sources(tmp_path, "us-reports", {"volumes-570-579": [earlier, volume], "volumes-580-589": []}, terms={"volumes-570-579": [2012, 2015], "volumes-580-589": [2016, 2019]})
+    args = SimpleNamespace(sources_local=str(tmp_path))
+    manifests = cases.source_manifests(args)
+    built = cases.build_cases_from_sources(args, manifests, [], 2013)
+    opinions = {docket: case["opinions"] for (_, docket), case in built.items()}
+    # The orders' No. 13–5 and the docket an application arose in, No. 13–854, are no cases of their own; OT2012's volume is not read for OT2013.
+    assert sorted(opinions) == ["12-1182", "12-1183", "12-1281", "12-820", "13-551", "13A1003"]
+
+    def span(first, last):
+        return "".join(page + "\f" for page in printed[first - 1:last])
+
+    expected = {"12-820": ([1, 2], "LOZANO v. MONTOYA ALVAREZ", "2014-03-05", "572 U.S. 1"), "12-1182": ([3, 5], "ENVIRONMENTAL PROTECTION AGENCY et al. v. EME HOMER CITY GENERATION, L. P., et al.", "2014-04-29", "572 U.S. 3"), "13A1003": ([11, 12], "TEVA PHARMACEUTICALS USA, INC., et al. v. SANDOZ, INC., et al.", "2014-04-18", "572 U.S. 1301")}
+    for docket, (pages, title, date, citation) in expected.items():
+        [doc] = opinions[docket]
+        assert (doc["collection"], doc["pages"], doc["title"], doc["date"], doc["citation"], doc["text"]) == ("us-reports", pages, title, date, citation, span(*pages)), docket
+    assert opinions["12-1183"] == opinions["12-1182"]
+    # A case a listing gives its opinion of the Court keeps only that; one with only an opinion relating to orders gets its pages too, which stop at the Reporter's Note.
+    assert [doc["id"] for doc in opinions["12-1281"]] == [canning["id"]]
+    assert [(doc["collection"], doc["pages"], doc["citation"], doc["title"]) for doc in opinions["13-551"]] == [("opinions-relating-to-orders", None, None, "Smith v. Jones"), ("us-reports", [7, 7], "572 U.S. 7", "SMITH v. JONES")]
+    assert built[(2013, "12-1183")]["source_rows"] == [{"collection": "us-reports", "id": volume["id"], "date": "2014-04-29", "title": expected["12-1182"][1]}]
+    # The volumes whose terms span the term are part of what the term is built from.
+    signature = cases.source_signature(manifests, [], 2013)
+    assert signature["us-reports"] == [{"partition": "data/volumes-570-579.parquet", "sha256": manifests["us-reports"]["partitions"]["volumes-570-579"]["sha256"]}]
+    assert "us-reports" not in cases.source_signature(manifests, [], 2020)
+
+
+def test_scanned_volumes_before_ot1971_give_only_original_cases_and_drop_unlikely_dockets(tmp_path):
+    older = [
+        "OCTOBER TERM, 1970 112\nSyllabus\nOREGON v. MITCHELL, ATTORNEY GENERAL\nON BILL OF COMPLAINT\nNo. 43, Orig. Argued October 19, 1970—Decided December 21, 1970*\ntext\n*Together with No. 44, Orig., Texas v. Mitchell, Attorney General, also on bill of complaint.",
+        "OCTOBER TERM, 1970 113\nSyllabus\nUNITED STATES v. ARIZONA\nON BILL OF COMPLAINT\nNo. 46, Orig.\ntext",
+        "114 OCTOBER TERM, 1970\nSyllabus 400 U. S.\nALPHA v. BETA\nCERTIORARI TO THE COURT OF APPEALS\nNo. 15. Argued October 13, 1970—Decided December 7, 1970\ntext",
+        "115 ALPHA v. BETA\nOpinion of the Court\ntext",
+        "OCTOBER TERM, 1970 116\nSyllabus\nGAMMA v. DELTA\nAPPEALS FROM THE COURT OF APPEALS\nNos. 62–63. Argued November 9, 1970—Decided January 25, 1971\ntext",
+        "OCTOBER TERM, 1970 117\nDecree\nARIZONA v. CALIFORNIA ET AL.\nON BILL OF COMPLAINT\nNo. 8, Orig. Decided June 3, 1963—Decree entered March 9, 1964—\nAmended decree entered February 28, 1966—Supplemental\ndecree entered January 25, 1971\nSupplemental decree entered.\nOpinion reported: 373 U. S. 546, and see the order Decided April 1, 1968.",
+    ]
+    # A scan can read a running head's page number onto a line of its own, or wrongly.
+    newer = [
+        "YOUNGER v. GILMORE\nPer Curiam\nYOUNGER, ATTORNEY GENERAL OF\nCALIFORNIA, ET AL. V.\nGILMORE ET AL.\n15\nAPPEAL FROM THE UNITED STATES DISTRICT COURT\nNo. 70----9. Argued October 14, 1971-Decided November 8, 1971\n319 F. Supp. 105, affirmed.",
+        "16 OCTOBER TERM, 1971\nPer Curiam 404 U. S.\nGAMMA v. DELTA\nCERTIORARI TO THE COURT OF APPEALS\nNo. 78-5097. Argued October 12, 1971-Decided November 9, 1971\ntext",
+        "EPSILON v. ZETA 17\nPer Curiam\nEPSILON v. ZETA\nCERTIORARI TO THE COURT OF APPEALS\nNo. 71-6. Decided November 10, 1971\ntext",
+        "19 EPSILON v. ZETA\nPer Curiam\ntext",
+        "ETA v. THETA\nPer Curiam\nETA v. THETA\nCERTIORARI TO THE COURT OF APPEALS\nNo. 71-7. Decided November 11, 1971\ntext",
+        "802 OCTOBER TERM, 1971\nNovember 15, 1971 404 U. S.\nNo. 71-5. Order.",
+    ]
+    other_sources(tmp_path)
+    write_sources(tmp_path, "us-reports", {"volumes-400-409": [reports_row("pdfs/usreports/usreports-400_pdfa.pdf", 1970, older, "ocr_text"), reports_row("pdfs/usreports/usreports-404_pdfa.pdf", 1971, newer, "ocr_text")]}, terms={"volumes-400-409": [1970, 1971]})
+    args = SimpleNamespace(sources_local=str(tmp_path))
+    manifests = cases.source_manifests(args)
+    # Before OT1971 a case's caption numbers it No. 15, or a pair Nos. 62–63, which name no docket the other sources use, but still ends the case before it; an original case keeps its number.
+    built = cases.build_cases_from_sources(args, manifests, [], 1970)
+    assert {docket: [(doc["pages"], doc["citation"]) for doc in case["opinions"]] for (_, docket), case in built.items()} == {"43, Orig.": [([1, 2], "400 U.S. 112")], "44, Orig.": [([1, 2], "400 U.S. 112")], "8, Orig.": [([6, 6], "400 U.S. 117")]}
+    # A decree has the date its caption's chain of dates ends on, not that of the decision it carries out or of a later date the text gives.
+    [decree] = built[(1970, "8, Orig.")]["opinions"]
+    assert (decree["title"], decree["date"]) == ("ARIZONA v. CALIFORNIA ET AL.", "1971-01-25")
+    assert built[(1970, "43, Orig.")]["opinions"][0]["ocr_text"] == "".join(page + "\f" for page in older[:2])
+    # From OT1971 the caption's docket has its year, which a scan can print with a run of dashes; one whose year is after the term is a misreading and is dropped, and the case after it still ends the case before. A page number comes from the next page when the first does not give it, unless the next is of orders, and two that disagree give none.
+    built = cases.build_cases_from_sources(args, manifests, [], 1971)
+    assert {docket: [(doc["pages"], doc["citation"], doc["title"], doc["date"]) for doc in case["opinions"]] for (_, docket), case in built.items()} == {"70-9": [([1, 1], "404 U.S. 15", "YOUNGER, ATTORNEY GENERAL OF CALIFORNIA, ET AL. V. GILMORE ET AL.", "1971-11-08")], "71-6": [([3, 4], None, "EPSILON v. ZETA", "1971-11-10")], "71-7": [([5, 5], None, "ETA v. THETA", "1971-11-11")]}
+
+
+def test_a_term_with_no_cases_is_a_file_with_the_schema_and_no_row_group(tmp_path):
+    stats = cases.write_case_parquet([], tmp_path / "data" / "OT1969.parquet")
+    handle = pq.ParquetFile(tmp_path / "data" / "OT1969.parquet")
+    # The datasets library reads a file in batches the size of its first row group, and fails on one of 0 rows.
+    assert stats["rows"] == 0 and stats["file"] == "data/OT1969.parquet" and handle.metadata.num_row_groups == 0 and handle.schema_arrow.equals(cases.SCHEMA)
+
+
+def test_a_slip_opinion_goes_to_the_cases_its_footnote_says_were_decided_with_it(tmp_path):
+    first = "Syllabus\nLEARNING RESOURCES, INC., et al. v. TRUMP, PRESIDENT OF THE UNITED STATES, et al.\ncertiorari before judgment to the united states court of appeals for the district of columbia circuit\nNo. 24–1287. Argued November 5, 2025—Decided February 20, 2026*\n*Together with No. 25–250, Trump, President of the United States, et al. v. V. O. S. Selections, Inc., et al., on certiorari before judgment to the same court.\n"
+    slip = {"id": "opinions/25pdf/24-1287_4gcj.pdf", "partition": "OT2025", "url": "u", "term": 2025, "date": "2026-02-20", "docket": "24-1287", "title": "Learning Resources, Inc. v. Trump", "text_source": "born_digital", "text": first + "\fsecond page cites another case.1\n1 Together with No. 25–998, I v. J, on certiorari to the same court.\f"
+            "third page names *Together with No. 25–999, A v. B, also on certiorari to the same court.\f"}
+    # A numbered footnote is about another case, and a footnote that does not go on to say how the case came up, before its page ends, is not read.
+    other = {"id": "opinions/25pdf/25-5_a.pdf", "partition": "OT2025", "url": "u", "term": 2025, "date": "2026-03-02", "docket": "25-5", "title": "C v. D", "text_source": "born_digital", "text": "Syllabus\nNo. 25–5. Decided March 2, 2026*\n*Together with No. 25–6, " + "E v. F, " * 60 + "\f"}
+    # A listing that names both dockets already gives each the opinion once.
+    both = {"id": "opinions/25pdf/25-10_b.pdf", "partition": "OT2025", "url": "u", "term": 2025, "date": "2026-03-09", "docket": "25-10, 25-11", "title": "G v. H", "text_source": "born_digital", "text": "Syllabus\nNo. 25–10. Decided March 9, 2026*\n*Together with No. 25–11, G v. H, on certiorari to the same court.\f"}
+    other_sources(tmp_path, opinions_of_the_court={"OT2025": [slip, other, both]})
+    write_sources(tmp_path, "us-reports", {})
+    args = SimpleNamespace(sources_local=str(tmp_path))
+    built = cases.build_cases_from_sources(args, cases.source_manifests(args), [], 2025)
+    assert sorted(docket for _, docket in built) == ["24-1287", "25-10", "25-11", "25-250", "25-5"]
+    assert [doc["id"] for doc in built[(2025, "25-11")]["opinions"]] == [both["id"]]
+    [doc] = built[(2025, "25-250")]["opinions"]
+    assert doc == built[(2025, "24-1287")]["opinions"][0] and doc["text"] == slip["text"] and doc["collection"] == "opinions-of-the-court"
+    assert built[(2025, "25-250")]["source_rows"] == [{"collection": "opinions-of-the-court", "id": slip["id"], "date": "2026-02-20", "title": "Learning Resources, Inc. v. Trump"}]
+
+
 # Whole runs: OT2025 is the current term, OT2010 an older one.
 def source_layout(base):
     def write(collection, partitions):
@@ -315,7 +435,7 @@ def source_layout(base):
         return {"id": f"oral_arguments/argument_transcripts/{term}/{name}", "partition": f"OT{term}", "url": f"https://www.supremecourt.gov/oral_arguments/argument_transcripts/{term}/{name}", "term": term, "date": f"{term}-11-01", "docket": docket, "title": title, "text_source": "born_digital", "text": f"transcript of {title}"}
 
     write("argument-transcripts", {"OT2025": [transcript(2025, "25-1", "25-1_a1b2.pdf", "Skinner v. Louisiana"), transcript(2025, "141-Orig", "141-orig_c3d4.pdf", "Texas v. New Mexico")], "OT2010": [transcript(2010, "10-1", "10-1.pdf", "Alpha v. Beta"), transcript(2010, "10-2", "10-2.pdf", "Gamma v. Delta")]})
-    for collection in ("opinions-of-the-court", "opinions-relating-to-orders", "in-chambers-opinions", "granted-noted-cases-list"):
+    for collection in ("opinions-of-the-court", "opinions-relating-to-orders", "in-chambers-opinions", "granted-noted-cases-list", "us-reports"):
         write(collection, {})
 
 

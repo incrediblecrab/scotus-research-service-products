@@ -35,6 +35,8 @@ def test_an_empty_partition_is_a_valid_file_with_the_schema(tmp_path):
     stats = write_parquet([], tmp_path / "empty.parquet")
     assert stats["rows"] == 0 and read_parquet(tmp_path / "empty.parquet") == []
     assert pq.read_schema(tmp_path / "empty.parquet").equals(SCHEMA)
+    # The datasets library reads a file in batches the size of its first row group, and fails on one of 0 rows.
+    assert pq.ParquetFile(tmp_path / "empty.parquet").metadata.num_row_groups == 0
 
 
 def test_row_groups_close_at_the_byte_limit_and_a_large_row_fills_one_alone(tmp_path, monkeypatch):

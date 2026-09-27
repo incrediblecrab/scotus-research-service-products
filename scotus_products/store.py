@@ -114,7 +114,8 @@ def write_parquet(rows, path, schema=SCHEMA):
             if size >= ROW_GROUP_BYTES:
                 writer.write_table(pa.Table.from_pylist(batch, schema=schema))
                 batch, size = [], 0
-        if batch or not rows:
+        # An empty partition's file has no row group: the datasets library reads a file in batches the size of its first row group, and fails on one of 0 rows.
+        if batch:
             writer.write_table(pa.Table.from_pylist(batch, schema=schema))
     finally:
         writer.close()
