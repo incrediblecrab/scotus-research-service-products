@@ -4,7 +4,7 @@ The pipeline package, run as `python -m scotus_products {list,run,verify,card,su
 
 **Objective:** keep each collection's Parquet partitions equal to what the Court's pages list, every file as served and its text as the extractor printed it, with one writer at a time.
 
-**Inputs:** the listing pages and files on www.supremecourt.gov; each collection's `{collection}/manifest.json` in its category's repo, on the Hub or under `--local DIR/scotus-{category}`; poppler's `pdftotext`, `pdfinfo` and `pdfimages`.
+**Inputs:** the listing pages and files on www.supremecourt.gov, and for `cases.py` the docket and argument audio pages; each collection's `{collection}/manifest.json` in its category's repo, on the Hub or under `--local DIR/scotus-{category}`; poppler's `pdftotext`, `pdfinfo` and `pdfimages`.
 
 **Files:**
 
@@ -17,3 +17,4 @@ The pipeline package, run as `python -m scotus_products {list,run,verify,card,su
 - `store.py`: the schema, Parquet partitions, and the local and Hub stores, which keep each collection under its own directory of its category's repo.
 - `card.py`: the collection's card, rendered from its manifest, and the category's card (the repo's README.md, one config per collection), rendered from all of them.
 - `verify.py`: the checks behind `verify`.
+- `cases.py`: the builder of scotus-cases, run as `python -m scotus_products.cases {run,verify,card}`. It reads the opinion, transcript and granted/noted list rows of the document datasets and keys them by docket, so that `141-Orig`, `141orig` and `22O141` are all `141, Orig.`; asks for each docket page that is due, at the address the docket's number and format make likelier first and conditionally where it was found before; links each case's MP3 from the argument audio pages; and commits one term at a time, carrying over from the last run every page it could not reach.

@@ -1,4 +1,4 @@
-# At 00:00 and 12:00 UTC, sync every collection with www.supremecourt.gov within one time budget, in the order sources.COLLECTIONS lists them: each collection reads its listing pages, fetches what is new or changed, and commits to its category's dataset. Each collection still to come keeps --reserve-minutes of the budget, so a long backfill cannot starve the updates after it. Then verify each collection the run changed against its manifest. A run that ran out of budget while files remained starts the next run itself.
+# At 00:00 and 12:00 UTC, first assemble the case-centric dataset from the document datasets and the docket pages due for a check, then sync every collection with www.supremecourt.gov within one time budget, in the order sources.COLLECTIONS lists them: each collection reads its listing pages, fetches what is new or changed, and commits to its category's dataset. Each collection still to come keeps --reserve-minutes of the budget, so a long backfill cannot starve the updates after it. Then verify each collection the run changed against its manifest. A run that ran out of budget while files remained starts the next run itself.
 # Writes to Hugging Face use Trusted Publishing: with `id-token: write`, the CLI sets HF_OIDC_RESOURCE to each collection's dataset before writing to it, so no Hugging Face token is stored anywhere. The workflow uses no secret.
 name: pipeline
 
@@ -14,7 +14,10 @@ on:
         description: "Minutes the whole sync may take (empty: 290)"
         default: ""
       args:
-        description: "Extra run arguments for a bounded test, e.g. --local /tmp/smoke --partitions OT2025 --max-units 1 (skips verify and never starts another run)"
+        description: "Extra run arguments for a bounded test, e.g. --local /tmp/smoke --partitions OT2025 --max-units 1 (skips verify and the cases job, and never starts another run)"
+        default: ""
+      cases_budget_minutes:
+        description: "Minutes the cases job may take (empty: 60; 0 skips it)"
         default: ""
 
 permissions: {}
@@ -25,7 +28,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Assembles incrediblecrab/scotus-cases from the document datasets as the Hub holds them, so its rows reflect the documents as of the previous run, and from the docket pages due for a check. It runs before sync rather than beside it, so the two never ask the Court for pages at once: robots.txt sets Crawl-delay: 1, and the Fetcher paces requests within one process. Its failure does not hold back the sync.
+  cases:
+    # A scheduled run has no inputs, and null compares equal to '0' in an expression, so the default is filled in first.
+    if: ${{ !inputs.args && (inputs.cases_budget_minutes || '60') != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      more: ${{ steps.build.outputs.more }}
+      fetched: ${{ steps.build.outputs.fetched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -q .
+      - name: Build
+        id: build
+        env:
+          BUDGET: ${{ inputs.cases_budget_minutes || '60' }}
+        run: |
+          set -o pipefail
+          python -m scotus_products.cases run --budget-minutes "$BUDGET" --workdir "$RUNNER_TEMP" | tee cases.json
+      - name: Verify
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python -m scotus_products.cases verify --workdir "$RUNNER_TEMP" | tee cases-verify.json
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          for step in cases cases-verify; do
+            if [ -s "$step.json" ]; then { echo "### $step"; echo '```json'; cat "$step.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+
   sync:
+    needs: cases
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     # GitHub stops a hosted job at 360 minutes; the default budget of 290 leaves room for setup, the commits after the budget runs out, and verify.
     timeout-minutes: 355
@@ -85,10 +129,10 @@ jobs:
             if [ -s "$step.json" ]; then { echo "### $step"; echo '```json'; cat "$step.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           done
 
-  # GitHub starts scheduled runs late, or drops them, when it is busy. A sync that ran out of budget while files remained therefore starts the next run instead of waiting, as a backfill of the scanned United States Reports needs several runs. Only a run that fetched something continues the chain, so a run that makes no progress cannot restart itself forever. The next run syncs every collection: GitHub keeps one waiting run and cancels an older waiting one, so the run started here can replace a waiting scheduled run and must do its work. A job of its own, so the job that parses downloaded pages never holds `actions: write`.
+  # GitHub starts scheduled runs late, or drops them, when it is busy. A sync that ran out of budget while files remained, or a cases build that ran out of budget, therefore starts the next run instead of waiting, as a backfill of the scanned United States Reports or of the docket pages needs several runs. Only a job that fetched something continues the chain, so a run that makes no progress cannot restart itself forever. The next run syncs every collection: GitHub keeps one waiting run and cancels an older waiting one, so the run started here can replace a waiting scheduled run and must do its work. A job of its own, so the job that parses downloaded pages never holds `actions: write`.
   continue:
-    needs: sync
-    if: ${{ !cancelled() && !inputs.args && needs.sync.outputs.more == 'true' && needs.sync.outputs.fetched != '0' }}
+    needs: [cases, sync]
+    if: ${{ !cancelled() && !inputs.args && ((needs.sync.outputs.more == 'true' && needs.sync.outputs.fetched != '0') || (needs.cases.outputs.more == 'true' && needs.cases.outputs.fetched != '0')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
