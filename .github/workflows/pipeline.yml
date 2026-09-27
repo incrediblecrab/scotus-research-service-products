@@ -82,7 +82,7 @@ jobs:
             if [ -s "$step.json" ]; then { echo "### $step"; echo '```json'; cat "$step.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           done
 
-  # GitHub starts scheduled runs late, or drops them, when it is busy. A sync that ran out of budget while files remained therefore starts the next run instead of waiting, as a backfill of the scanned United States Reports needs several runs. Only a run that fetched something continues the chain, so a run that makes no progress cannot restart itself forever. A job of its own, so the job that parses downloaded pages never holds `actions: write`.
+  # GitHub starts scheduled runs late, or drops them, when it is busy. A sync that ran out of budget while files remained therefore starts the next run instead of waiting, as a backfill of the scanned United States Reports needs several runs. Only a run that fetched something continues the chain, so a run that makes no progress cannot restart itself forever. The next run syncs every collection: GitHub keeps one waiting run and cancels an older waiting one, so the run started here can replace a waiting scheduled run and must do its work. A job of its own, so the job that parses downloaded pages never holds `actions: write`.
   continue:
     needs: sync
     if: ${{ !cancelled() && !inputs.args && needs.sync.outputs.more == 'true' && needs.sync.outputs.fetched != '0' }}
@@ -95,8 +95,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          DATASET: ${{ inputs.dataset || 'all' }}
-        run: gh workflow run pipeline.yml --ref "$GITHUB_REF_NAME" -f dataset="$DATASET"
+        run: gh workflow run pipeline.yml --ref "$GITHUB_REF_NAME"
 
   # GitHub disables schedules in a public repository after 60 days without repository activity. This job makes no commit to prevent that: GitHub called keepalive commits a violation of its Terms for circumventing that policy (https://github.com/ddev/github-action-add-on-test/issues/46). Instead it fails once the last commit is 50 days old, so GitHub notifies the user who last changed the cron, who can push one. It runs on every scheduled run, because GitHub starts scheduled runs late or drops them. The log names the schedule that started the run.
   inactivity:
