@@ -30,12 +30,18 @@ ARCHIVED_TRANSCRIPTS = range(1968, 2000)
 NOT_LISTED = ("publicinfo/",)
 _DATE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4}|\d{2})$")
 _TERM = re.compile(r"October Term (\d{4})")
+_TERM_YEAR = re.compile(r"Term Year:\s*(\d{4})")
 _VOLUME = re.compile(r"^Volume\s+(\d+)\b")
 _ORIG = re.compile(r"^(No\. (\d+), Orig\.)")
 
 
 class ListingError(RuntimeError):
     """A listing page could not be read as a listing; the run stops rather than record the collection as empty."""
+
+
+def shown_terms(main):
+    """The terms a term page's main column says it lists: each term page prints "Term Year: 2025" under its term menu. On September 27, 2026 every term page the collections read that answered with a page showed its own term but one: /oral_arguments/argument_audio/2017 answered with a copy of the October Term 2025 page, Last-Modified January 22, 2026, where the argument-audio listing begun at 10:03 UTC that day had found the 63 arguments of 2017."""
+    return {int(year) for year in _TERM_YEAR.findall(field(main))}
 
 
 def current_term(today):
@@ -879,7 +885,7 @@ COLLECTIONS = {c.name: c for c in (
 
 
 class Listing:
-    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty."""
+    """Reads a collection's listing pages. list_all() returns (head, {id: Unit}); pages that redirect elsewhere (term pages that do not exist) count as empty. A term page that shows another term (see shown_terms) lists nothing for its term: its entries are the other term's, so they are not taken, and pipeline.check_listing stops the run if the last complete listing found entries on it."""
 
     def __init__(self, collection, fetcher, today=None):
         self.collection = collection
@@ -908,6 +914,10 @@ class Listing:
                 main = main_content(parse(data))
             except ValueError as error:
                 raise ListingError(f"{url}: {error}") from error
+            shown = sorted(shown_terms(main)) if term is not None else []
+            if shown and shown != [term]:
+                self.pages[url] = {"term": term, "entries": 0, "shown_term": shown}
+                continue
             entries = self.collection.parse(main, url, term)
             self.pages[url] = {"term": term, "entries": len(entries)}
             found += entries

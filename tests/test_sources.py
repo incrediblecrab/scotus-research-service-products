@@ -231,6 +231,17 @@ def test_listing_counts_a_redirected_term_page_as_empty():
     assert listing.pages[BASE + "orders/ordersofthecourt/26"] == {"term": 2026, "entries": 0, "redirected": True}
 
 
+def test_listing_takes_nothing_from_a_term_page_that_shows_another_term():
+    # On September 27, 2026 the server answered argument_audio/2017 with a copy of the October Term 2025 page.
+    fixture = page_bytes("oral_arguments_argument_audio_2025")
+    answers = {BASE + "oral_arguments/argument_audio/2017": Response(200, fixture), BASE + "oral_arguments/argument_audio/2025": Response(200, fixture)}
+    listing = Listing(COLLECTIONS["argument-audio"], Pages(answers), today=TODAY)
+    head, units = listing.list_all()
+    assert listing.pages[BASE + "oral_arguments/argument_audio/2017"] == {"term": 2017, "entries": 0, "shown_term": [2025]}
+    assert listing.pages[BASE + "oral_arguments/argument_audio/2025"] == {"term": 2025, "entries": 58}
+    assert head["entries"] == 58 and {entry["term"] for unit in units.values() for entry in unit.entries} == {2025}
+
+
 def test_listing_refuses_a_single_page_that_redirects_or_fails():
     with pytest.raises(ListingError):
         Listing(COLLECTIONS["in-chambers-opinions"], Pages({}), today=TODAY).list_all()

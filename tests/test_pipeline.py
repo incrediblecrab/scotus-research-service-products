@@ -120,6 +120,19 @@ def test_a_redirected_term_page_may_be_empty(tmp_path, two_files):
     assert record["finished"]
 
 
+def test_a_term_page_that_shows_another_term_stops_the_run_where_it_had_entries(tmp_path, two_files):
+    units, site = two_files
+    run(tmp_path, FakeListing(units, pages={BASE + "test/17": {"term": 2017, "entries": 2}, BASE + "test/26": {"term": 2026, "entries": 0}}), site)
+    wrong = {BASE + "test/17": {"term": 2017, "entries": 0, "shown_term": [2025]}, BASE + "test/26": {"term": 2026, "entries": 0}}
+    record, _ = run(tmp_path, FakeListing([], pages=wrong), site)
+    assert record["finished"] is False and record["stopped"].startswith("ListingError: " + BASE + "test/17 shows Term Year 2025, not 2017, so it lists nothing; the last complete listing found 2 entries there")
+    assert all(row["listed"] for row in rows(tmp_path).values())
+    # A page that listed nothing before may show another term: nothing is lost by counting it empty.
+    wrong_empty = {BASE + "test/17": {"term": 2017, "entries": 2}, BASE + "test/26": {"term": 2026, "entries": 0, "shown_term": [2025]}}
+    record, _ = run(tmp_path, FakeListing(units, pages=wrong_empty), site)
+    assert record["finished"]
+
+
 def test_a_mutable_file_is_asked_about_and_fetched_again_only_when_it_changed(tmp_path, born_digital):
     calendar = unit("oral_arguments/2025termcourtcalendar.pdf", partition="OT2025", term=2025)
     site = FakeSite({calendar.url: born_digital})

@@ -24,7 +24,7 @@ from huggingface_hub.errors import EntryNotFoundError, RemoteEntryNotFoundError
 from .cli import step_outputs, trusted_publishing
 from .http import Blocked, Fetcher, QuotaExhausted, Unavailable
 from .markup import field, parse, render, resolve, squash
-from .sources import BASE, COLLECTIONS, iso_date, long_date, repo_id
+from .sources import BASE, COLLECTIONS, iso_date, long_date, repo_id, shown_terms
 from .store import MANIFEST, HubStore, LocalStore, schema_differences, sha256_file
 
 REPO_ID = repo_id("cases")
@@ -741,6 +741,11 @@ def audio_for_term(fetcher, term, wanted, deadline):
     response = fetcher.get(listing_url)
     if response.status_code != 200:
         return {}, {"listing_status": response.status_code, "pages": 0}
+    doc = parse(response.content)
+    shown = sorted(shown_terms((doc.xpath('//div[@id="pagemaindiv"]') or [doc])[0]))
+    if shown and shown != [term]:
+        # Another term's page (see sources.shown_terms): its links are that term's arguments, and a docket argued in both terms would get the wrong audio.
+        return {}, {"listing_status": response.status_code, "shown_term": shown, "pages": 0}
     pages = parse_audio_listing(response.content, listing_url)
     out, seen = {}, {}
     for docket in sorted(wanted):

@@ -183,11 +183,12 @@ def flush(ctx, manifest, message=None):
 
 
 def check_listing(base, pages):
-    """A term or list page that answered but listed nothing, where the last complete listing found entries on it, is a broken page rather than an emptied one."""
+    """A term or list page that answered but listed nothing, where the last complete listing found entries on it, is a broken page rather than an emptied one; so is a term page that showed another term."""
     before = ((base or {}).get("listing") or {}).get("pages") or {}
     for url, page in pages.items():
         if not page.get("redirected") and page["entries"] == 0 and (before.get(url) or {}).get("entries"):
-            raise ListingError(f"{url} lists nothing; the last complete listing found {before[url]['entries']} entries there")
+            shown = f" shows Term Year {', '.join(map(str, page['shown_term']))}, not {page['term']}, so it" if page.get("shown_term") else ""
+            raise ListingError(f"{url}{shown} lists nothing; the last complete listing found {before[url]['entries']} entries there")
 
 
 def sync(ctx, listing):

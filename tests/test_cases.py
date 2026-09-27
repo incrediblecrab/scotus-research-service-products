@@ -120,6 +120,17 @@ def test_audio_pages_give_mp3_links():
     assert page == {"page_url": listing["22-7466"], "mp3_url": "https://www.supremecourt.gov/media/audio/mp3files/22-7466.mp3", "date": "2024-10-09"}
 
 
+def test_audio_for_term_takes_no_links_from_another_terms_listing():
+    # On September 27, 2026 the server answered argument_audio/2017 with a copy of the October Term 2025 page.
+    listing, case_page = read("oral_arguments_argument_audio_2024.html"), "https://www.supremecourt.gov/oral_arguments/audio/2024/22-7466"
+    site = Site({"https://www.supremecourt.gov/oral_arguments/argument_audio/2024": listing, "https://www.supremecourt.gov/oral_arguments/argument_audio/2017": listing, case_page: read("audio_case.html")})
+    assert cases.audio_for_term(site, 2017, ["22-7466"], None) == ({}, {"listing_status": 200, "shown_term": [2024], "pages": 0})
+    assert site.asked(case_page) == 0
+    found, stats = cases.audio_for_term(site, 2024, ["22-7466"], None)
+    assert found == {"22-7466": [{"page_url": case_page, "mp3_url": "https://www.supremecourt.gov/media/audio/mp3files/22-7466.mp3", "date": "2024-10-09"}]}
+    assert stats == {"listing_status": 200, "pages": 1}
+
+
 @pytest.mark.parametrize("docket_field, file_id, expected", [
     ("141, Orig.", "opinions/25pdf/141orig_1a2b.pdf", ["141, Orig."]),
     ("141-Orig", "oral_arguments/argument_transcripts/2023/141-orig_2_5okl.pdf", ["141, Orig."]),
