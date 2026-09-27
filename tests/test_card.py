@@ -218,6 +218,7 @@ def test_a_category_card_has_a_config_only_for_collections_with_rows_and_a_line_
     assert meta["license"] == ("unknown" if unknown else "other")
     others = [c for c in CATEGORIES if c != category]
     assert all(f"(https://huggingface.co/datasets/incrediblecrab/scotus-{c})" in body for c in others) and f"datasets/incrediblecrab/scotus-{category})" not in body
+    assert body.count("(https://huggingface.co/datasets/incrediblecrab/scotus-cases): Cases, one row per docket in each term") == 1
 
 
 def test_a_category_card_before_any_run_has_no_configs():

@@ -317,6 +317,7 @@ def render_category(category, manifests):
     for other, (other_title, _) in CATEGORIES.items():
         if other != category:
             lines.append(f"- [{category_repo(other)}](https://huggingface.co/datasets/{category_repo(other)}): {other_title}")
+    lines.append(f"- [{category_repo('cases')}](https://huggingface.co/datasets/{category_repo('cases')}): Cases, one row per docket in each term, assembled from the Opinions, Oral Arguments and Case Documents datasets and the Court's docket pages")
     lines += ["", "## License", ""]
     grouped = {}
     for collection in members:

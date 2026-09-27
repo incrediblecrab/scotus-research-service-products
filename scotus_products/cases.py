@@ -24,10 +24,10 @@ from huggingface_hub.errors import EntryNotFoundError, RemoteEntryNotFoundError
 from .cli import step_outputs, trusted_publishing
 from .http import Blocked, Fetcher, QuotaExhausted, Unavailable
 from .markup import field, parse, render, resolve, squash
-from .sources import BASE, COLLECTIONS, long_date
+from .sources import BASE, COLLECTIONS, long_date, repo_id
 from .store import MANIFEST, HubStore, LocalStore, sha256_file
 
-REPO_ID = "incrediblecrab/scotus-cases"
+REPO_ID = repo_id("cases")
 # Bumped when row assembly changes, so every term is assembled again; its docket pages are carried over, not fetched again.
 BUILDER = 2
 CURRENT_RECHECK = timedelta(hours=6)
