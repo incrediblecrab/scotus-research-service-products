@@ -608,3 +608,20 @@ def test_verify_catches_a_complete_term_with_a_page_never_fetched(world, capsys,
     (world.root / "README.md").write_text(cases.render_card(manifest))
     assert cases.cmd_verify(world.args) == 1
     assert json.loads(capsys.readouterr().out)["problems"] == ["OT2025: 25-1 has no docket page fetched, but the term is marked complete"]
+
+
+def test_verify_names_a_term_file_with_other_columns(world, capsys):
+    # On September 27, 2026 nine terms an earlier builder wrote still had questions_presented where the schema has questions_presented_url: every check passed, and the dataset viewer failed.
+    world.run(capsys)
+    path = world.root / "data" / "OT2010.parquet"
+    table = pq.read_table(path)
+    pq.write_table(table.rename_columns(["questions_presented" if column == "questions_presented_url" else column for column in table.column_names]), path)
+    manifest = world.manifest()
+    manifest["terms"]["OT2010"]["sha256"] = sha256_file(path)
+    (world.root / MANIFEST).write_text(json.dumps(manifest))
+    (world.root / "README.md").write_text(cases.render_card(manifest))
+    assert cases.cmd_verify(world.args) == 1
+    assert json.loads(capsys.readouterr().out)["problems"] == [
+        "OT2010: data/OT2010.parquet has no column questions_presented_url",
+        "OT2010: data/OT2010.parquet has a column questions_presented the schema does not have",
+    ]

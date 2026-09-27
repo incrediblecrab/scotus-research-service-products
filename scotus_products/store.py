@@ -100,6 +100,18 @@ def row_weight(row):
     return sum(len(row[name] or b"") for name in ("file", "text", "ocr_text", "entries", "metadata"))
 
 
+def schema_differences(schema, expected):
+    """How a file's Arrow schema differs from the expected one, by column name, type and order; nullability and metadata are not compared. The dataset viewer takes a config's columns from its first file, so a file with other columns fails the whole config."""
+    have = {field.name: field.type for field in schema}
+    want = {field.name: field.type for field in expected}
+    out = [f"has no column {name}" for name in want if name not in have]
+    out += [f"has a column {name} the schema does not have" for name in have if name not in want]
+    out += [f"has {name} as {have[name]}, the schema says {want[name]}" for name in want if name in have and have[name] != want[name]]
+    if not out and list(have) != list(want):
+        out.append("has the schema's columns in another order")
+    return out
+
+
 def write_parquet(rows, path, schema=SCHEMA):
     """Rows sorted by id, zstd, content-defined chunking so a rewritten partition re-uploads only its changed chunks."""
     rows = sorted((normalize(row) for row in rows), key=lambda row: row["id"])
@@ -256,6 +268,9 @@ class LocalStore(_Staging):
     def read_table(self, repo_path, columns):
         return pq.read_table(self._local(repo_path), columns=columns)
 
+    def read_schema(self, repo_path):
+        return pq.read_schema(self._local(repo_path))
+
     def read_columns(self, repo_path, columns):
         return self.read_table(repo_path, columns).to_pydict()
 
@@ -345,6 +360,12 @@ class HubStore(_Staging):
         fs = HfFileSystem(token=self.api.token)
         with fs.open(f"datasets/{self.repo_id}@{self.revision}/{self._path(repo_path)}", "rb") as handle:
             return pq.read_table(handle, columns=columns)
+
+    def read_schema(self, repo_path):
+        """The file's Arrow schema, from its footer alone."""
+        fs = HfFileSystem(token=self.api.token)
+        with fs.open(f"datasets/{self.repo_id}@{self.revision}/{self._path(repo_path)}", "rb") as handle:
+            return pq.ParquetFile(handle).schema_arrow
 
     def read_columns(self, repo_path, columns):
         return self.read_table(repo_path, columns).to_pydict()

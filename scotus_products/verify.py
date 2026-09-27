@@ -1,4 +1,4 @@
-"""Checks a dataset: that its files are what the manifest says and its rows keep the verbatim rules; with a listing (--live), that it holds what the site lists; with deep, that every stored file still hashes to its file_sha256 and extracts to exactly its stored text; with redownload, that the site still serves a sample of the stored files."""
+"""Checks a dataset: that its files are what the manifest says, with the schema's columns, and its rows keep the verbatim rules; with a listing (--live), that it holds what the site lists; with deep, that every stored file still hashes to its file_sha256 and extracts to exactly its stored text; with redownload, that the site still serves a sample of the stored files."""
 
 import hashlib
 import random
@@ -11,7 +11,7 @@ import pyarrow.compute as pc
 
 from .extract import extract_audio, extract_html, extract_video, nonspace, pdftotext
 from .pipeline import MAX_ATTEMPTS
-from .store import partition_path
+from .store import SCHEMA, partition_path, schema_differences
 
 SAMPLE = 10
 # Files the live listing and the dataset may differ by without a problem: documents posted or removed since the last run.
@@ -45,11 +45,13 @@ def verify(store, listing=None, deep=False, redownload=0, fetcher=None, workers=
         if sha256s.get(path) != entry.get("sha256"):
             problems.append(f"{key}: {path} has sha256 {str(sha256s.get(path))[:12]}, the manifest says {str(entry.get('sha256'))[:12]}")
         try:
+            differences = schema_differences(store.read_schema(path), SCHEMA)
             table = store.read_table(path, ["id", "partition", "listed", "text_source", "file_sha256", "file_size", "text", "ocr_text"])
         except Exception as error:  # noqa: BLE001 - a file that cannot be read is a finding, and the other partitions are still checked
             problems.append(f"{key}: {path} cannot be read: {type(error).__name__}: {error}"[:300])
             unreadable.add(path)
             continue
+        problems.extend(f"{key}: {path} {difference}" for difference in differences)
         ids = table.column("id").to_pylist()
         if len(ids) != entry.get("rows"):
             problems.append(f"{key}: {len(ids)} rows, the manifest says {entry.get('rows')}")

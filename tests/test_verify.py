@@ -3,6 +3,8 @@
 import hashlib
 import time
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from conftest import FakeListing, FakeSite, collection, unit
@@ -209,3 +211,22 @@ def test_a_file_the_manifest_does_not_name(dataset):
     root, _, _ = dataset
     (root / "data" / "stray.parquet").write_bytes((root / "data" / "OT2023.parquet").read_bytes())
     assert "data/stray.parquet is not in the manifest" in check(root)["problems"]
+
+
+def test_a_partition_file_with_other_columns(dataset):
+    # The dataset viewer takes a config's columns from its first file, so a partition written with other columns fails the whole config while every row still reads.
+    root, _, _ = dataset
+    path = root / "data" / "OT2023.parquet"
+    table = pq.read_table(path)
+    table = table.rename_columns(["name" if column == "title" else column for column in table.column_names])
+    table = table.set_column(table.column_names.index("pages"), "pages", table.column("pages").cast(pa.int64()))
+    pq.write_table(table, path)
+    manifest_path = root / "manifest.json"
+    manifest = __import__("json").loads(manifest_path.read_text())
+    manifest["partitions"]["OT2023"]["sha256"] = sha256_file(path)
+    manifest_path.write_text(__import__("json").dumps(manifest))
+    assert check(root)["problems"] == [
+        "OT2023: data/OT2023.parquet has no column title",
+        "OT2023: data/OT2023.parquet has a column name the schema does not have",
+        "OT2023: data/OT2023.parquet has pages as int64, the schema says int32",
+    ]

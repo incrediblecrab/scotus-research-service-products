@@ -25,7 +25,7 @@ from .cli import step_outputs, trusted_publishing
 from .http import Blocked, Fetcher, QuotaExhausted, Unavailable
 from .markup import field, parse, render, resolve, squash
 from .sources import BASE, COLLECTIONS, iso_date, long_date, repo_id
-from .store import MANIFEST, HubStore, LocalStore, sha256_file
+from .store import MANIFEST, HubStore, LocalStore, schema_differences, sha256_file
 
 REPO_ID = repo_id("cases")
 # Bumped when row assembly changes, so every term is assembled again; its docket pages are carried over, not fetched again.
@@ -874,7 +874,7 @@ def cmd_card(args):
 
 
 def cmd_verify(args):
-    """Checks the stored dataset against its manifest: each term's file and SHA-256, its row count, that every row belongs to its term and to no other term, that the dockets the manifest lists pages for are the rows' dockets, that a complete term has every page fetched, and that the card is the one the manifest renders."""
+    """Checks the stored dataset against its manifest: each term's file, SHA-256 and columns, its row count, that every row belongs to its term and to no other term, that the dockets the manifest lists pages for are the rows' dockets, that a complete term has every page fetched, and that the card is the one the manifest renders."""
     store = open_store(args, write=False)
     try:
         manifest = store.read_manifest()
@@ -892,6 +892,7 @@ def cmd_verify(args):
                 continue
             if stored[repo_path] != entry.get("sha256"):
                 problems.append(f"{key}: {repo_path} has SHA-256 {stored[repo_path][:12]}, manifest says {str(entry.get('sha256'))[:12]}")
+            problems.extend(f"{key}: {repo_path} {difference}" for difference in schema_differences(store.read_schema(repo_path), SCHEMA))
             table = store.read_table(repo_path, ["term", "docket", "docket_fetched_at"]).to_pylist()
             if len(table) != entry.get("rows"):
                 problems.append(f"{key}: {len(table)} rows, manifest says {entry.get('rows')}")

@@ -6,12 +6,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from huggingface_hub.errors import HfHubHTTPError
 
 from scotus_products import store as store_module
-from scotus_products.store import COLUMNS, SCHEMA, HubStore, LocalStore, Superseded, git_blob_sha1, read_parquet, sha256_file, write_parquet
+from scotus_products.store import COLUMNS, SCHEMA, HubStore, LocalStore, Superseded, git_blob_sha1, read_parquet, schema_differences, sha256_file, write_parquet
 
 
 def test_rows_round_trip_sorted_with_typed_and_json_columns(tmp_path):
@@ -37,6 +38,17 @@ def test_an_empty_partition_is_a_valid_file_with_the_schema(tmp_path):
     assert pq.read_schema(tmp_path / "empty.parquet").equals(SCHEMA)
     # The datasets library reads a file in batches the size of its first row group, and fails on one of 0 rows.
     assert pq.ParquetFile(tmp_path / "empty.parquet").metadata.num_row_groups == 0
+
+
+def test_schema_differences_name_each_column_that_is_not_the_schemas(tmp_path):
+    write_parquet([{"id": "a"}], tmp_path / "p.parquet")
+    store = LocalStore(tmp_path)
+    try:
+        assert schema_differences(store.read_schema("p.parquet"), SCHEMA) == []
+    finally:
+        store.close()
+    assert schema_differences(pa.schema(list(reversed(SCHEMA))), SCHEMA) == ["has the schema's columns in another order"]
+    assert schema_differences(SCHEMA.set(SCHEMA.get_field_index("etag"), pa.field("etag", pa.int64())), SCHEMA) == ["has etag as int64, the schema says string"]
 
 
 def test_row_groups_close_at_the_byte_limit_and_a_large_row_fills_one_alone(tmp_path, monkeypatch):
