@@ -161,6 +161,8 @@ def cmd_verify(args):
                 store.close()
             report["collection"] = name
             print(json.dumps(report, indent=1, ensure_ascii=False), flush=True)
+            for message in report.get("warnings", []):
+                print(f"::warning::{name}: {message}", flush=True)
             status = status or (1 if report["problems"] else 0)
     finally:
         if fetcher:

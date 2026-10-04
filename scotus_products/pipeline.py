@@ -183,18 +183,20 @@ def flush(ctx, manifest, message=None):
 
 
 def check_listing(base, pages):
-    """A term or list page that answered but listed nothing, where the last complete listing found entries on it, is a broken page rather than an emptied one. A term page that showed another term is held instead (see held_pages)."""
+    """An unexplained empty listing is fatal. Recognized wrong-term or unlinked historical opinion pages are held instead."""
     before = ((base or {}).get("listing") or {}).get("pages") or {}
     for url, page in pages.items():
-        if not page.get("redirected") and not page.get("shown_term") and page["entries"] == 0 and (before.get(url) or {}).get("entries"):
+        if not page.get("redirected") and not page.get("shown_term") and not page.get("unlinked_rows") and page["entries"] == 0 and (before.get(url) or {}).get("entries"):
             raise ListingError(f"{url} lists nothing; the last complete listing found {before[url]['entries']} entries there")
 
 
 def held_pages(base, pages):
-    """Term pages that showed another term, by their label or their entries' dates (sources.Listing), where the last complete listing found entries, one message each. Their entries are not in this listing, so the run leaves the rows they listed as they are: it delists nothing, skips the partitions the listing gives no files, and does not publish its listing, so the next run compares its pages with the same complete listing."""
+    """Previously populated pages showing another term or recognizable historical opinion rows without links. Keep stored rows, suppress delisting, skip partitions with no observed files, and retain the last complete listing."""
     before = ((base or {}).get("listing") or {}).get("pages") or {}
     held = []
     for url, page in sorted(pages.items()):
+        if page.get("unlinked_rows") and (before.get(url) or {}).get("entries"):
+            held.append(f"{url} has {page['unlinked_rows']} opinion rows but no document links after a re-read; what the last complete listing found there ({before[url]['entries']} entries) is left as it is")
         if page.get("shown_term") and (before.get(url) or {}).get("entries"):
             by = " by its entries' dates" if page.get("shown_by") == "dates" else ""
             held.append(f"{url} shows Term Year {', '.join(map(str, page['shown_term']))}{by}, not {page['term']}, so what the last complete listing found there ({before[url]['entries']} entries) is left as it is")
@@ -217,6 +219,7 @@ def sync(ctx, listing):
         head, units = listing.list_all()
         check_listing(base, listing.pages)
         held = held_pages(base, listing.pages)
+        manifest["held"] = held
         for message in held:
             log.warning("held: %s", message)
         homes = {uid: key for key, entry in manifest["partitions"].items() for uid in entry.get("ids") or ()}

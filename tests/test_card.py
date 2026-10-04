@@ -111,6 +111,7 @@ EVERY = "Every document file that the Supreme Court's website lists under"
 def test_the_card_claims_every_file_only_when_no_gap_shows(whole):
     assert whole["seen"]["partitions"] == {"OT2023": 1, "OT2024": 1}
     assert EVERY in render(whole) and "does not hold every file" not in render(whole)
+    assert "No run has yet brought every partition up to date" not in render(whole)
     failure = {"partition": "OT2023", "url": "https://www.supremecourt.gov/pdfs/c.pdf", "attempts": 3, "error": "FetchFailed: HTTP 404", "at": "2026-09-26T00:00:00Z"}
     gaps = {
         "no complete run": lambda m: m.pop("listing"),
@@ -124,6 +125,16 @@ def test_the_card_claims_every_file_only_when_no_gap_shows(whole):
         plant(manifest)
         body = render(manifest)
         assert EVERY not in body and "This collection does not hold every file the listing links" in body, gap
+
+
+def test_held_pages_are_visible_in_both_cards_and_never_claim_completeness(whole):
+    whole["held"] = ["Historical page has 7 opinion rows but no document links; stored files retained."]
+    body = render(whole)
+    assert EVERY not in body
+    assert "**Degraded:**" in body and whole["held"][0] in body
+    category = COLLECTIONS[whole["collection"]].category
+    root = render_category(category, {whole["collection"]: whole})
+    assert "1 listing page held" in root and "every listed file" not in root
 
 
 def test_the_card_names_the_partitions_a_stopped_run_never_reached(tmp_path, born_digital):

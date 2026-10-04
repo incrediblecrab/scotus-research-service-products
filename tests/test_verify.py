@@ -60,6 +60,24 @@ def test_a_fresh_dataset_passes_every_check(dataset):
     assert report["redownload"]["same"] == 2 and report["live"]["missing"] == 0
 
 
+def test_held_pages_do_not_make_safe_updates_fail_an_old_listing_count(dataset, born_digital):
+    root, units, site = dataset
+    new = unit("opinions/23pdf/new.pdf")
+    site.files[new.url] = born_digital
+    held = {"https://www.supremecourt.gov/test/": {"term": 2005, "entries": 0, "unlinked_rows": 7}}
+    listing = FakeListing([units[0], new], pages=held)
+    store = LocalStore(root)
+    try:
+        sync(Context(store=store, collection=collection(), fetcher=site, deadline=time.monotonic() + 600), listing)
+    finally:
+        store.close()
+    report = check(root, listing=listing)
+    assert report["problems"] == [] and report["warnings"]
+    assert report["live"]["status"] == "incomplete" and report["live"]["extra"] is None
+    tamper(root, lambda rows: row(rows, OPINION).update(title="Edited"), manifest_too=False)
+    assert any("has sha256" in problem for problem in check(root, listing=listing)["problems"])
+
+
 def test_a_partition_file_that_is_not_the_one_the_manifest_names(dataset):
     root, _, _ = dataset
     tamper(root, lambda rows: row(rows, OPINION).update(title="Edited"), manifest_too=False)

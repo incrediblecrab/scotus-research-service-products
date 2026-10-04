@@ -10,7 +10,7 @@ from pathlib import Path
 import pyarrow.compute as pc
 
 from .extract import extract_audio, extract_html, extract_video, nonspace, pdftotext
-from .pipeline import MAX_ATTEMPTS
+from .pipeline import MAX_ATTEMPTS, held_pages
 from .store import SCHEMA, partition_path, schema_differences
 
 SAMPLE = 10
@@ -76,7 +76,7 @@ def verify(store, listing=None, deep=False, redownload=0, fetcher=None, workers=
                 problems.append(f"{key}: {uid} is {source} with text {'set' if text else 'null'} and ocr_text {'set' if ocr else 'null'}")
         if any(value is None for value in table.column("file_sha256").to_pylist()):
             problems.append(f"{key}: rows without file_sha256")
-        if entry.get("complete"):
+        if entry.get("complete") and not manifest.get("held"):
             unstored = sum(1 for uid, f in failures.items() if f.get("partition") == key and f["attempts"] >= MAX_ATTEMPTS and uid not in set(ids))
             at_listing = (listing_record.get("partitions") or {}).get(key)
             if at_listing is not None and entry.get("listed", 0) + unstored != at_listing:
@@ -103,6 +103,9 @@ def verify(store, listing=None, deep=False, redownload=0, fetcher=None, workers=
     }
     if listing is not None:
         report["live"] = live_diff(manifest, set(every_id), listed_ids, listing, problems)
+    warnings = list(dict.fromkeys([*(manifest.get("held") or []), *((report.get("live") or {}).get("held") or [])]))
+    if warnings:
+        report["warnings"] = warnings
     readable = {key: path for key, path in expected.items() if path in files and path not in unreadable}
     if deep:
         report["deep"] = deep_check(store, readable, problems, workers, workdir)
@@ -119,8 +122,13 @@ def live_diff(manifest, stored, listed_ids, listing, problems):
     failed = {uid for uid, f in (manifest.get("failures") or {}).items() if f["attempts"] >= MAX_ATTEMPTS}
     missing = sorted(live - stored - failed)
     extra = sorted(listed_ids - live)
+    held = held_pages(manifest, listing.pages)
     if len(missing) > TOLERANCE:
         problems.append(f"{len(missing)} listed files are neither stored nor recorded as failed: {missing[:SAMPLE]}")
+    if held:
+        return {"status": "incomplete", "listed_now": len(live), "entries_now": head["entries"], "stored": len(stored),
+                "missing": len(missing), "missing_but_failed": len((live - stored) & failed), "extra": None,
+                "missing_sample": missing[:SAMPLE], "held": held}
     if len(extra) > TOLERANCE:
         problems.append(f"{len(extra)} rows are marked listed but the site no longer lists them: {extra[:SAMPLE]}")
     return {

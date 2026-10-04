@@ -940,6 +940,23 @@ class Listing:
             return None
         return None if shown else entries
 
+    def unlinked_opinions(self, main, term):
+        """Recognizable historical opinion rows, dated in the named term, whose document links are absent."""
+        if self.collection.parse is not parse_opinion_table or term is None or term >= current_term(self.today) or shown_terms(main) != {term}:
+            return 0
+        rows = 0
+        for table in main.xpath(".//table"):
+            headers = table.xpath(".//tr[th][1]/th")
+            if not {"Date", "Docket", "Name"} <= {field(cell) for cell in headers}:
+                continue
+            for row in table.xpath(".//tr[td]"):
+                values = _row_of(row.xpath("./td")[0])
+                day = iso_date((values or {}).get("Date"), self.today)
+                if not day or current_term(date.fromisoformat(day)) != term or not values.get("Docket") or not values.get("Name"):
+                    return 0
+                rows += 1
+        return rows
+
     def list_all(self):
         found = []
         for url, term in self.collection.pages(self.today):
@@ -954,12 +971,22 @@ class Listing:
             except ValueError as error:
                 raise ListingError(f"{url}: {error}") from error
             entries, shown, by = self.page(main, url, term)
+            unlinked = self.unlinked_opinions(main, term) if not entries and not shown else 0
             if shown:
                 entries = self.reread(url, term)
                 if entries is None:
                     self.pages[url] = {"term": term, "entries": 0, "shown_term": shown, "shown_by": by}
                     continue
+            if unlinked:
+                again = self.reread(url, term)
+                if again:
+                    entries = again
+                else:
+                    self.pages[url] = {"term": term, "entries": 0, "unlinked_rows": unlinked}
+                    continue
             self.pages[url] = {"term": term, "entries": len(entries)} | ({"reread": shown, "shown_by": by} if shown else {})
+            if unlinked:
+                self.pages[url]["reread_reason"] = "opinion rows without document links"
             found += entries
         units = group_units(found)
         head = {"count": len(units), "entries": len(found), "pages": len(self.pages)}

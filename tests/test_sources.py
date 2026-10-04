@@ -312,6 +312,44 @@ def test_reread_url_adds_a_query_string():
     assert reread_url(BASE + "x.aspx?term=2017") == BASE + "x.aspx?term=2017&reread=1"
 
 
+def unlinked_opinion_page(term=2005):
+    return f"<div id='pagemaindiv'><b>Term Year: {term}</b><table><tr><th>Date</th><th>Docket</th><th>Name</th></tr><tr><td>06/12/06</td><td>05-10706</td><td>Rangel-Reyes v. United States</td></tr></table></div>".encode()
+
+
+@pytest.mark.parametrize("recovered", [False, True])
+def test_historical_opinion_rows_without_links_are_reread_and_identified(recovered):
+    url = BASE + "opinions/relatingtoorders/05"
+    plain = unlinked_opinion_page()
+    again = plain.replace(b"Rangel-Reyes v. United States", b"<a href='/opinions/05pdf/a.pdf'>Rangel-Reyes v. United States</a>") if recovered else plain
+    answers = {url: Response(200, plain), reread_url(url): Response(200, again)}
+    listing = Listing(COLLECTIONS["opinions-relating-to-orders"], Pages(answers), today=TODAY)
+    _, units = listing.list_all()
+    assert len(units) == int(recovered)
+    assert bool(listing.pages[url].get("unlinked_rows")) is not recovered
+    if not recovered:
+        assert listing.pages[url]["unlinked_rows"] == 1
+    else:
+        assert listing.pages[url]["reread_reason"] == "opinion rows without document links"
+
+
+@pytest.mark.parametrize("page", [
+    unlinked_opinion_page().replace(b"Term Year: 2005", b"Unrelated page"),
+    unlinked_opinion_page().replace(b"<th>Docket</th>", b"<th>Other</th>"),
+    unlinked_opinion_page().replace(b"06/12/06", b"not a date"),
+    unlinked_opinion_page().replace(b"06/12/06", b"06/12/25"),
+    unlinked_opinion_page().replace(b"<td>05-10706</td>", b""),
+    unlinked_opinion_page().replace(b"<table>", b"<p>").replace(b"</table>", b"</p>"),
+])
+def test_unrecognized_empty_pages_are_not_held_as_unlinked_opinions(page):
+    url = BASE + "opinions/relatingtoorders/05"
+    listing = Listing(COLLECTIONS["opinions-relating-to-orders"], Pages({url: Response(200, page)}), today=TODAY)
+    try:
+        listing.list_all()
+    except ListingError:
+        return
+    assert "unlinked_rows" not in listing.pages[url]
+
+
 def test_listing_refuses_a_single_page_that_redirects_or_fails():
     with pytest.raises(ListingError):
         Listing(COLLECTIONS["in-chambers-opinions"], Pages({}), today=TODAY).list_all()

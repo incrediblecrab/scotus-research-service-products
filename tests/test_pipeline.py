@@ -159,6 +159,27 @@ def test_a_page_held_for_its_entries_dates_says_so():
     assert held_pages(base, pages) == [BASE + "test/22 shows Term Year 2023 by its entries' dates, not 2022, so what the last complete listing found there (32 entries) is left as it is"]
 
 
+def test_unlinked_historical_opinions_preserve_rows_and_allow_new_terms(tmp_path, two_files, born_digital):
+    units, site = two_files
+    url = BASE + "test/05"
+    good = {url: {"term": 2005, "entries": 2}}
+    _, store = run(tmp_path, FakeListing(units, pages=good), site)
+    before = store.read_manifest()
+    new = unit("opinions/26pdf/new.pdf", partition="OT2026", term=2026)
+    site.files[new.url] = born_digital
+    held = {url: {"term": 2005, "entries": 0, "unlinked_rows": 7}}
+    record, store = run(tmp_path, FakeListing([new], pages=held), site)
+    manifest = store.read_manifest()
+    assert record["finished"] and record["stopped"] is None and record["added"] == 1
+    assert "7 opinion rows but no document links" in record["held"][0]
+    assert manifest["held"] == record["held"]
+    assert manifest["listing"] == before["listing"] and manifest["seen"] == before["seen"]
+    assert manifest["partitions"]["OT2023"] == before["partitions"]["OT2023"]
+    assert all(row["listed"] for row in rows(tmp_path).values())
+    record, store = run(tmp_path, FakeListing(units + [new], pages=good), site)
+    assert not record.get("held") and store.read_manifest()["held"] == []
+
+
 def test_the_next_whole_listing_undoes_one_that_took_another_terms_entries(tmp_path, born_digital, scanned):
     # On September 27, 2026 a run took orders/ordersbycircuit/22 listing the October Term 2023 orders: it delisted the 2022 files, and each 2023 file, now linked from both pages, took term 2022 from its first entry.
     old, new = unit("orders/22/a.pdf", partition="OT2022", term=2022), unit("orders/23/b.pdf", partition="OT2023", term=2023)

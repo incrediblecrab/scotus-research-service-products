@@ -111,6 +111,7 @@ def status(manifest):
     seen = manifest.get("seen") or listing
     out = {
         "entries": entries, "failures": failures, "listing": listing, "seen": seen,
+        "held_pages": manifest.get("held") or [],
         "missing": {uid: f for uid, f in failures.items() if uid not in stored_ids},
         "stale": sorted(uid for uid in failures if uid in stored_ids),
         "incomplete": sorted(key for key, entry in entries.items() if not entry.get("complete")),
@@ -119,7 +120,7 @@ def status(manifest):
     }
     for name in ("rows", "listed", "delisted", "file_bytes", "pages"):
         out[name] = sum(entry.get(name) or 0 for entry in entries.values())
-    out["whole"] = bool(listing.get("at")) and not out["incomplete"] and not out["unreached"] and not out["missing"] and out["listed"] == seen.get("count")
+    out["whole"] = bool(listing.get("at")) and not out["held_pages"] and not out["incomplete"] and not out["unreached"] and not out["missing"] and out["listed"] == seen.get("count")
     return out
 
 
@@ -154,6 +155,8 @@ def render(manifest):
     where = f"the Supreme Court's website lists under [{collection.title}]({collection.source_page})"
     if whole:
         lead = f"Every document file that {where}, with the file itself, byte for byte, and its text. One row per file."
+    elif held["held_pages"]:
+        lead = f"Document files that {where}, each with the file itself, byte for byte, and its text. One row per file. The current listing could not be fully checked; previously stored files from held pages are retained."
     else:
         lead = f"Document files that {where}, each with the file itself, byte for byte, and its text. One row per file. This collection does not hold every file the listing links: the status below says what it holds and where the gaps are."
     category_title = CATEGORIES[collection.category][0]
@@ -175,6 +178,9 @@ def render(manifest):
         lines += ["", f"Last complete run: {listing['at']}."]
     else:
         lines += ["", "No run has yet brought every partition up to date with the listing."]
+    if held["held_pages"]:
+        lines += ["", "**Degraded:** listing pages remain unresolved; the last complete listing is retained.", ""]
+        lines += [f"- {message}" for message in held["held_pages"]]
     if incomplete:
         lines += ["", f"{count(len(incomplete), 'partition')} {'is' if len(incomplete) == 1 else 'are'} not yet complete: {', '.join(incomplete[:FAILURES_SHOWN])}{' ...' if len(incomplete) > FAILURES_SHOWN else ''}."]
     if unreached:
@@ -282,6 +288,8 @@ def render_category(category, manifests):
             lines.append(f"| {name} | 0 | 0 KB | 0 | none | [{collection.title}]({collection.source_page}): no run has read the listing yet |")
             continue
         gaps = []
+        if h["held_pages"]:
+            gaps.append(f"{count(len(h['held_pages']), 'listing page')} held; freshness unverified")
         if h["unreached"] or h["incomplete"]:
             gaps.append(f"{count(len(set(h['unreached']) | set(h['incomplete'])), 'partition')} not yet complete")
         if h["missing"]:
