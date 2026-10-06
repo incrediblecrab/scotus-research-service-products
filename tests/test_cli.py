@@ -7,7 +7,7 @@ import pytest
 
 from conftest import FakeListing, FakeSite, unit
 from scotus_products import cli
-from scotus_products.pipeline import new_manifest
+from scotus_products.pipeline import MAX_ATTEMPTS, new_manifest
 from scotus_products.sources import COLLECTIONS
 
 NAME = "in-chambers-opinions"
@@ -71,6 +71,48 @@ def test_a_held_page_is_a_warning_on_actions_and_the_run_succeeds(monkeypatch, t
     assert f"::warning::argument-audio: {held}" in out.out.splitlines() and "stopped" not in out.err
 
 
+def test_unresolved_files_warn_even_when_backoff_skips_every_fetch(tmp_path, site, capsys):
+    files = dict(site.files)
+    site.files.clear()
+    local = ["--dataset", NAME, "--local", str(tmp_path), "--workdir", str(tmp_path)]
+    for attempt in range(MAX_ATTEMPTS + 1):
+        assert main("run", *local) == 0
+        out = capsys.readouterr().out
+        record, _ = json.JSONDecoder().raw_decode(out)
+        assert record["source_health"] == {"status": "degraded", "missing_files": 1, "retained_files_with_failed_refreshes": 0, "held_pages": 0}
+        assert f"::warning::{NAME}: unstored files: 1; stored files with failed refreshes: 0." in out
+        assert record["failed"] == (1 if attempt < MAX_ATTEMPTS else 0)
+    assert len(site.gets) == MAX_ATTEMPTS
+    site.files.update(files)
+    assert main("run", *local, "--refetch") == 0
+    record = json.loads(capsys.readouterr().out)
+    assert record["source_health"] == {"status": "complete", "missing_files": 0, "retained_files_with_failed_refreshes": 0, "held_pages": 0}
+
+
+def test_failed_refreshes_warn_without_calling_retained_files_missing(tmp_path, site, capsys):
+    local = ["--dataset", NAME, "--local", str(tmp_path), "--workdir", str(tmp_path)]
+    assert main("run", *local) == 0
+    capsys.readouterr()
+    site.files.clear()
+    assert main("run", *local, "--refetch") == 0
+    out = capsys.readouterr().out
+    record, _ = json.JSONDecoder().raw_decode(out)
+    assert record["source_health"] == {"status": "degraded", "missing_files": 0, "retained_files_with_failed_refreshes": 1, "held_pages": 0}
+    assert f"::warning::{NAME}: unstored files: 0; stored files with failed refreshes: 1." in out
+
+
+def test_source_health_never_claims_complete_when_a_listing_is_held_or_unverified():
+    manifest = new_manifest(COLLECTIONS[NAME])
+    manifest["listing"] = {"at": "2026-10-06T00:00:00Z", "count": 0}
+    clean = {"stopped": None}
+    assert cli.source_health(manifest, clean)["status"] == "complete"
+    manifest["held"] = ["historical links unavailable"]
+    assert cli.source_health(manifest, clean)["status"] == "degraded"
+    assert cli.source_health(manifest, clean)["held_pages"] == 1
+    assert cli.source_health(manifest, {"stopped": "ListingError: unavailable"})["status"] == "unverified"
+    assert cli.source_health(None, clean) == {"status": "unverified"}
+
+
 def test_a_card_needs_a_manifest(tmp_path):
     with pytest.raises(SystemExit, match="no manifest.json"):
         main("card", "--dataset", NAME, "--local", str(tmp_path), "--workdir", str(tmp_path))
@@ -124,6 +166,9 @@ def test_a_run_on_actions_names_each_repo_for_trusted_publishing_keeps_a_reserve
         def __init__(self, repo_id, workdir=None, token=None, card=None, prefix="", root_card=None):
             assert token is None
             self.repo_id, self.peak_bytes = repo_id, 0
+
+        def read_manifest(self):
+            return new_manifest(COLLECTIONS[NAME])
 
         def close(self):
             pass

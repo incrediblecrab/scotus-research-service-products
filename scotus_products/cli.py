@@ -11,7 +11,7 @@ from pathlib import Path
 
 from functools import partial
 
-from .card import render, render_category
+from .card import render, render_category, status as collection_status
 from .http import Fetcher
 from .pipeline import CLEAN_STOPS, SUMMARY_COLUMNS, Context, summarize, sync
 from .sources import COLLECTIONS, Listing
@@ -53,6 +53,17 @@ def names(args):
     return list(COLLECTIONS) if args.dataset == ALL else [args.dataset]
 
 
+def source_health(manifest, run):
+    if manifest is None:
+        return {"status": "unverified"}
+    coverage = collection_status(manifest)
+    gaps = {"missing_files": len(coverage["missing"]), "retained_files_with_failed_refreshes": len(coverage["stale"]), "held_pages": len(coverage["held_pages"])}
+    status = "degraded" if any(gaps.values()) else "complete" if coverage["whole"] else "incomplete"
+    if run["stopped"] not in CLEAN_STOPS:
+        status = "unverified"
+    return {"status": status, **gaps}
+
+
 def cmd_run(args):
     for tool in ("pdftotext", "pdfinfo", "pdfimages"):
         if not shutil.which(tool):
@@ -76,6 +87,7 @@ def cmd_run(args):
                           min_free_bytes=int(args.min_free_gb * 2**30))
             try:
                 run = sync(ctx, Listing(collection, fetcher))
+                run["source_health"] = source_health(store.read_manifest(), run)
             finally:
                 store.close()
             run.update(collection=name, minutes=round((time.monotonic() - started) / 60, 1), peak_scratch_bytes=store.peak_bytes)
@@ -83,6 +95,11 @@ def cmd_run(args):
             for message in run.get("held") or ():
                 # A workflow command: GitHub shows it on the run's page, and the run still succeeds.
                 print(f"::warning::{name}: {message}", flush=True)
+            health = run["source_health"]
+            if health.get("missing_files") or health.get("retained_files_with_failed_refreshes"):
+                print(f"::warning::{name}: unstored files: {health['missing_files']}; stored files with failed refreshes: {health['retained_files_with_failed_refreshes']}. These are unresolved manifest entries, not just this run's failures. See {collection.prefix}manifest.json and the dataset card for URLs and errors; successful execution does not establish complete source coverage.", flush=True)
+            elif "missing_files" not in health:
+                print(f"::warning::{name}: no manifest is available to establish source coverage.", flush=True)
             for key in counts:
                 counts[key] += run.get(key) or 0
             if run["stopped"] == "budget":

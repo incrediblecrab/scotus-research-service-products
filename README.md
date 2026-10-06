@@ -19,6 +19,8 @@ This repository builds Hugging Face datasets of the twenty-four Supreme Court do
 
 **Unavailable historical links:** a historical opinions page that still identifies its term and has valid Date, Docket and Name cells, but no document links, is read again once. If the links remain absent and the last complete listing found files there, that page is held rather than stopping the collection. The run retains the old files and listing, suppresses delisting, and continues updating other terms. The manifest, collection card, category card and Actions warnings identify the held page; no card claims the collection is fully current while a page is held. Verification still checks file hashes, schemas and stored rows, but does not compare updated partitions with the old listing's counts or call retained files absent from an unresolved page "extra." Unrecognized empty pages still stop the collection.
 
+**Source health:** each collection's run report includes `source_health`, counted from its published manifest using the same coverage rules as its cards. Actions warns when files remain unstored or retained files have failed refreshes, including runs that skip those files during retry backoff. Held pages remain separate warnings. These gaps do not stop unaffected collections; a green run means execution succeeded, not that every source file is available. The manifest and dataset card retain the failed URLs, attempts and errors. The pipeline does not guess replacement URLs or substitute another document for a missing file.
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
